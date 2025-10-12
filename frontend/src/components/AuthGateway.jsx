@@ -66,6 +66,9 @@ const Signup = ({ onSignupSuccess }) => {
     const [username, setUsername] = useState('');
     const [password, setPassword] = useState('');
     const [confirmPassword, setConfirmPassword] = useState('');
+    const [country, setCountry] = useState('');
+    const [state, setState] = useState('');
+    const [city, setCity] = useState('');
     const [showPassword, setShowPassword] = useState(false);
     const [showConfirmPassword, setShowConfirmPassword] = useState(false);
     const [error, setError] = useState(null);
@@ -74,7 +77,7 @@ const Signup = ({ onSignupSuccess }) => {
         e.preventDefault();
         setError(null);
 
-        if (!username.trim() || !password.trim() || !confirmPassword.trim()) {
+        if (!username.trim() || !password.trim() || !confirmPassword.trim() || !country.trim() || !state.trim() || !city.trim()) {
             setError('Please fill all fields.');
             return;
         }
@@ -87,7 +90,13 @@ const Signup = ({ onSignupSuccess }) => {
             const res = await fetch('http://localhost:5000/api/signup', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ username: username.trim(), password: password.trim() })
+                body: JSON.stringify({ 
+                    username: username.trim(), 
+                    password: password.trim(),
+                    country: country.trim(),
+                    state: state.trim(),
+                    city: city.trim()
+                })
             });
             const data = await res.json();
             if (!res.ok) {
@@ -128,6 +137,27 @@ const Signup = ({ onSignupSuccess }) => {
                 <button type="button" onClick={() => setShowConfirmPassword(v => !v)} className="absolute bottom-3 right-3 text-gray-400 hover:text-gray-200">
                     {showConfirmPassword ? '🙈' : '👁️'}
                 </button>
+            </div>
+            <div>
+                <label className="block text-sm text-gray-300 mb-1">Country</label>
+                <input type="text" placeholder="e.g. United States"
+                    value={country}
+                    onChange={e => setCountry(e.target.value)}
+                    className="w-full px-4 py-3 rounded-xl bg-white/5 border border-white/10 text-gray-100 placeholder:text-gray-400 focus:outline-none focus:border-eco-green focus:ring-2 focus:ring-eco-green/30 transition" />
+            </div>
+            <div>
+                <label className="block text-sm text-gray-300 mb-1">State/Province</label>
+                <input type="text" placeholder="e.g. California"
+                    value={state}
+                    onChange={e => setState(e.target.value)}
+                    className="w-full px-4 py-3 rounded-xl bg-white/5 border border-white/10 text-gray-100 placeholder:text-gray-400 focus:outline-none focus:border-eco-green focus:ring-2 focus:ring-eco-green/30 transition" />
+            </div>
+            <div>
+                <label className="block text-sm text-gray-300 mb-1">City</label>
+                <input type="text" placeholder="e.g. San Francisco"
+                    value={city}
+                    onChange={e => setCity(e.target.value)}
+                    className="w-full px-4 py-3 rounded-xl bg-white/5 border border-white/10 text-gray-100 placeholder:text-gray-400 focus:outline-none focus:border-eco-green focus:ring-2 focus:ring-eco-green/30 transition" />
             </div>
             {error && <div className="text-red-400 text-sm bg-red-500/10 border border-red-500/30 rounded-lg p-2">{error}</div>}
             <button type="submit" className="w-full py-3 bg-eco-accent text-eco-dark font-semibold rounded-xl hover:brightness-110 transition duration-300 shadow-[0_8px_30px_rgba(245,158,11,0.25)]">

@@ -2,37 +2,672 @@ import os
 import sqlite3
 from sqlite3 import Connection
 from typing import Tuple, Dict, Any, List, Set, Optional
+import base64
+import io
+import json
+import hashlib
+import time
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import bcrypt
 
-# YOLO and image processing
-from ultralytics import YOLO
+# Image processing
 import cv2
 import numpy as np
 
+# Video processing
+from moviepy.editor import VideoFileClip
+import tempfile
+import os
+
+# EXIF and geolocation processing
+import piexif
+from geopy.geocoders import Nominatim
+import math
+
+# Gemini AI integration
+import google.generativeai as genai
+from PIL import Image
+
 
 DB_PATH = os.path.join(os.path.dirname(__file__), 'rewards_db.sqlite')
-WEIGHTS_PATH = os.path.join(os.path.dirname(__file__), 'weights', 'best.pt')
 POINTS_PER_DETECTION = 100
 NON_RECYCLABLE_FLAT_POINTS = 50
 
-# Categories (aligned with Streamlit prototype)
-RECYCLABLE: Set[str] = set(['cardboard_box','can','plastic_bottle_cap','plastic_bottle','reuseable_paper','glass'])
-HAZARDOUS: Set[str] = set(['battery','chemical_spray_can','chemical_plastic_bottle','chemical_plastic_gallon','light_bulb','paint_bucket'])
+# Gemini API configuration
+GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', 'AIzaSyCfWu5kqtDCBySuyph7_L5aeODLosKWT7Q')
+genai.configure(api_key=GEMINI_API_KEY)
 
 
-# Lazy-loaded YOLO model
-_yolo_model: Optional[YOLO] = None
+def generate_image_hash(image_bytes: bytes) -> str:
+	"""
+	Generate a SHA-256 hash of the image bytes for duplicate detection
+	"""
+	return hashlib.sha256(image_bytes).hexdigest()
 
-def get_model() -> YOLO:
-	global _yolo_model
-	if _yolo_model is None:
-		if not os.path.exists(WEIGHTS_PATH):
-			raise RuntimeError(f"Model weights not found at {WEIGHTS_PATH}")
-		_yolo_model = YOLO(WEIGHTS_PATH)
-	return _yolo_model
+
+def extract_gps_from_image(image_bytes: bytes) -> tuple:
+	"""
+	Extract GPS coordinates from image EXIF data
+	Returns (latitude, longitude) or (None, None) if not found
+	"""
+	try:
+		# Load image and extract EXIF data
+		image = Image.open(io.BytesIO(image_bytes))
+		exif_dict = piexif.load(image.info.get('exif', b''))
+		
+		# Check if GPS data exists
+		if 'GPS' not in exif_dict:
+			return None, None
+		
+		gps_data = exif_dict['GPS']
+		
+		# Extract latitude
+		if piexif.GPSIFD.GPSLatitude in gps_data and piexif.GPSIFD.GPSLatitudeRef in gps_data:
+			lat_deg = gps_data[piexif.GPSIFD.GPSLatitude]
+			lat_ref = gps_data[piexif.GPSIFD.GPSLatitudeRef]
+			latitude = (lat_deg[0][0] / lat_deg[0][1] + 
+					   lat_deg[1][0] / lat_deg[1][1] / 60.0 + 
+					   lat_deg[2][0] / lat_deg[2][1] / 3600.0)
+			if lat_ref == b'S':
+				latitude = -latitude
+		else:
+			return None, None
+		
+		# Extract longitude
+		if piexif.GPSIFD.GPSLongitude in gps_data and piexif.GPSIFD.GPSLongitudeRef in gps_data:
+			lon_deg = gps_data[piexif.GPSIFD.GPSLongitude]
+			lon_ref = gps_data[piexif.GPSIFD.GPSLongitudeRef]
+			longitude = (lon_deg[0][0] / lon_deg[0][1] + 
+						lon_deg[1][0] / lon_deg[1][1] / 60.0 + 
+						lon_deg[2][0] / lon_deg[2][1] / 3600.0)
+			if lon_ref == b'W':
+				longitude = -longitude
+		else:
+			return None, None
+		
+		return latitude, longitude
+		
+	except Exception as e:
+		print(f"Error extracting GPS data: {str(e)}")
+		return None, None
+
+
+def reverse_geocode(latitude: float, longitude: float) -> dict:
+	"""
+	Convert GPS coordinates to address components using reverse geocoding
+	"""
+	try:
+		geolocator = Nominatim(user_agent="waste_bounty_app")
+		location = geolocator.reverse(f"{latitude}, {longitude}", language='en')
+		
+		if not location:
+			return None
+		
+		address = location.raw.get('address', {})
+		
+		return {
+			'country': address.get('country', 'Unknown'),
+			'state': address.get('state', address.get('province', 'Unknown')),
+			'city': address.get('city', address.get('town', address.get('village', 'Unknown')))
+		}
+		
+	except Exception as e:
+		print(f"Error in reverse geocoding: {str(e)}")
+		return None
+
+
+def calculate_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+	"""
+	Calculate distance between two GPS coordinates using Haversine formula
+	Returns distance in meters
+	"""
+	try:
+		# Convert to radians
+		lat1_rad = math.radians(lat1)
+		lon1_rad = math.radians(lon1)
+		lat2_rad = math.radians(lat2)
+		lon2_rad = math.radians(lon2)
+		
+		# Haversine formula
+		dlat = lat2_rad - lat1_rad
+		dlon = lon2_rad - lon1_rad
+		a = math.sin(dlat/2)**2 + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(dlon/2)**2
+		c = 2 * math.asin(math.sqrt(a))
+		
+		# Earth's radius in meters
+		earth_radius = 6371000
+		distance = earth_radius * c
+		
+		return distance
+		
+	except Exception as e:
+		print(f"Error calculating distance: {str(e)}")
+		return float('inf')
+
+
+def extract_keyframes_from_video(video_bytes: bytes) -> List[np.ndarray]:
+	"""
+	Intelligently extract 5 optimal frames from videos of any length (2-6 seconds)
+	Adaptive algorithm that finds the best frames for waste disposal verification:
+	- F1: Clear view of waste item in hand (early in video)
+	- F2: Pre-disposal context frame
+	- F3: Peak disposal action frame (highest motion/change)
+	- F4: Post-disposal verification frame
+	- F5: Final result frame (waste item in bin)
+	"""
+	try:
+		# Create temporary file for video processing
+		with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as temp_file:
+			temp_file.write(video_bytes)
+			temp_video_path = temp_file.name
+		
+		# Load video with OpenCV
+		cap = cv2.VideoCapture(temp_video_path)
+		if not cap.isOpened():
+			raise Exception("Could not open video file")
+		
+		# Get video properties
+		fps = cap.get(cv2.CAP_PROP_FPS)
+		total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+		duration = total_frames / fps if fps > 0 else 3.0
+		
+		# Ensure video is at least 2 seconds for proper analysis
+		if duration < 2.0:
+			raise Exception("Video too short - minimum 2 seconds required for proper disposal verification")
+		
+		print(f"Video analysis: duration={duration:.2f}s, fps={fps:.2f}, frames={total_frames}")
+		
+		# Adaptive frame selection based on video length
+		# For longer videos, we have more flexibility in frame selection
+		analysis_start = 0.2  # Start analysis after 0.2s (skip initial setup)
+		analysis_end = duration - 0.3  # End analysis 0.3s before end (skip final cleanup)
+		
+		# Calculate analysis window
+		analysis_duration = analysis_end - analysis_start
+		start_frame = int(analysis_start * fps)
+		end_frame = int(analysis_end * fps)
+		
+		print(f"Analysis window: {analysis_start:.2f}s to {analysis_end:.2f}s ({analysis_duration:.2f}s duration)")
+		
+		# Step 1: Extract all frames in analysis window for motion analysis
+		frames_data = []
+		for frame_idx in range(start_frame, end_frame):
+			cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+			ret, frame = cap.read()
+			if ret:
+				frames_data.append((frame_idx, frame))
+		
+		if len(frames_data) < 5:
+			raise Exception("Not enough frames for analysis")
+		
+		print(f"Analyzing {len(frames_data)} frames for optimal selection")
+		
+		# Step 2: Calculate motion scores for all frames
+		motion_scores = []
+		for i in range(1, len(frames_data) - 1):
+			prev_frame = frames_data[i-1][1]
+			curr_frame = frames_data[i][1]
+			next_frame = frames_data[i+1][1]
+			
+			# Calculate motion between consecutive frames
+			diff1 = cv2.absdiff(prev_frame, curr_frame)
+			diff2 = cv2.absdiff(curr_frame, next_frame)
+			motion_score = np.sum(diff1) + np.sum(diff2)
+			
+			# Calculate structural changes
+			gray_prev = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
+			gray_curr = cv2.cvtColor(curr_frame, cv2.COLOR_BGR2GRAY)
+			gray_next = cv2.cvtColor(next_frame, cv2.COLOR_BGR2GRAY)
+			
+			# Edge detection for structural changes
+			edges_prev = cv2.Canny(gray_prev, 50, 150)
+			edges_curr = cv2.Canny(gray_curr, 50, 150)
+			edges_next = cv2.Canny(gray_next, 50, 150)
+			
+			edge_diff1 = np.sum(cv2.absdiff(edges_prev, edges_curr))
+			edge_diff2 = np.sum(cv2.absdiff(edges_curr, edges_next))
+			
+			# Combined motion and structural change score
+			combined_score = motion_score + edge_diff1 + edge_diff2
+			motion_scores.append((i, combined_score, frames_data[i][0]))
+		
+		# Step 3: Find peak motion frame (disposal action)
+		motion_scores.sort(key=lambda x: x[1], reverse=True)
+		peak_motion_idx = motion_scores[0][0]  # Index in frames_data
+		peak_frame_idx = motion_scores[0][2]   # Actual frame number
+		
+		print(f"Peak motion detected at frame {peak_frame_idx} (score: {motion_scores[0][1]:.0f})")
+		
+		# Step 4: Select optimal 5 frames
+		# F1: Early frame showing item in hand (first 25% of analysis window)
+		f1_idx = max(0, int(len(frames_data) * 0.1))
+		f1 = frames_data[f1_idx][1]
+		
+		# F2: Pre-disposal frame (before peak motion)
+		f2_idx = max(0, peak_motion_idx - int(0.3 * fps))  # 0.3s before action
+		f2_idx = min(f2_idx, len(frames_data) - 1)
+		f2 = frames_data[f2_idx][1]
+		
+		# F3: Peak disposal action frame
+		f3 = frames_data[peak_motion_idx][1]
+		
+		# F4: Post-disposal frame (after peak motion)
+		f4_idx = min(len(frames_data) - 1, peak_motion_idx + int(0.3 * fps))  # 0.3s after action
+		f4 = frames_data[f4_idx][1]
+		
+		# F5: Final verification frame (last 25% of analysis window)
+		f5_idx = min(len(frames_data) - 1, int(len(frames_data) * 0.9))
+		f5 = frames_data[f5_idx][1]
+		
+		print(f"Selected frames: F1={f1_idx}, F2={f2_idx}, F3={peak_motion_idx}, F4={f4_idx}, F5={f5_idx}")
+		
+		# Step 5: Quality check - ensure frames are not too blurry or dark
+		frames = [f1, f2, f3, f4, f5]
+		quality_checked_frames = []
+		
+		for i, frame in enumerate(frames):
+			# Convert to grayscale for quality assessment
+			gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+			
+			# Calculate sharpness using Laplacian variance
+			sharpness = cv2.Laplacian(gray, cv2.CV_64F).var()
+			
+			# Calculate brightness
+			brightness = np.mean(gray)
+			
+			# Quality thresholds
+			min_sharpness = 100  # Minimum sharpness threshold
+			min_brightness = 30  # Minimum brightness threshold
+			max_brightness = 220  # Maximum brightness threshold (avoid overexposure)
+			
+			print(f"Frame F{i+1}: sharpness={sharpness:.1f}, brightness={brightness:.1f}")
+			
+			# If frame quality is poor, try to find a better nearby frame
+			if sharpness < min_sharpness or brightness < min_brightness or brightness > max_brightness:
+				print(f"Frame F{i+1} quality poor, searching for better alternative...")
+				
+				# Search for better frame in nearby range
+				search_range = int(0.2 * fps)  # Search within 0.2 seconds
+				best_frame = frame
+				best_score = sharpness + brightness
+				
+				start_search = max(0, frames_data[f1_idx if i == 0 else f2_idx if i == 1 else peak_motion_idx if i == 2 else f4_idx if i == 3 else f5_idx][0] - search_range)
+				end_search = min(len(frames_data) - 1, frames_data[f1_idx if i == 0 else f2_idx if i == 1 else peak_motion_idx if i == 2 else f4_idx if i == 3 else f5_idx][0] + search_range)
+				
+				for search_idx in range(start_search, end_search + 1):
+					if search_idx < len(frames_data):
+						search_frame = frames_data[search_idx][1]
+						search_gray = cv2.cvtColor(search_frame, cv2.COLOR_BGR2GRAY)
+						search_sharpness = cv2.Laplacian(search_gray, cv2.CV_64F).var()
+						search_brightness = np.mean(search_gray)
+						
+						if (search_sharpness >= min_sharpness and 
+							min_brightness <= search_brightness <= max_brightness):
+							search_score = search_sharpness + search_brightness
+							if search_score > best_score:
+								best_frame = search_frame
+								best_score = search_score
+				
+				quality_checked_frames.append(best_frame)
+				print(f"Frame F{i+1} replaced with better quality frame")
+			else:
+				quality_checked_frames.append(frame)
+		
+		cap.release()
+		
+		# Clean up temporary file
+		os.unlink(temp_video_path)
+		
+		# Return quality-checked frames in order: F1, F2, F3, F4, F5
+		return quality_checked_frames
+		
+	except Exception as e:
+		# Clean up temporary file if it exists
+		if 'temp_video_path' in locals() and os.path.exists(temp_video_path):
+			os.unlink(temp_video_path)
+		raise Exception(f"Video processing failed: {str(e)}")
+
+
+def analyze_video_sequence_with_gemini(frames: List[np.ndarray], max_retries: int = 2) -> Dict[str, Any]:
+	"""
+	Analyze a sequence of 5 video frames using Gemini API for waste disposal verification
+	Includes retry mechanism for improved consistency
+	"""
+	if not GEMINI_API_KEY:
+		return {
+			"error": "Gemini API key not configured", 
+			"waste_type": "unknown",
+			"disposal_verified": False,
+			"fallback": True,
+			"message": "Gemini API not available"
+		}
+	
+	for attempt in range(max_retries + 1):
+		try:
+			print(f"Gemini analysis attempt {attempt + 1}/{max_retries + 1}")
+			result = _perform_gemini_analysis(frames)
+			
+			# If we get a valid result, return it
+			if result and not result.get("fallback", False):
+				return result
+			
+			# If this is not the last attempt, continue to retry
+			if attempt < max_retries:
+				print(f"Analysis attempt {attempt + 1} failed, retrying...")
+				continue
+			
+			# If all attempts failed, return the last result
+			return result
+			
+		except Exception as e:
+			print(f"Gemini analysis attempt {attempt + 1} failed with error: {str(e)}")
+			if attempt == max_retries:
+				return {
+					"error": f"Gemini analysis failed after {max_retries + 1} attempts: {str(e)}", 
+					"waste_type": "unknown",
+					"disposal_verified": False,
+					"fallback": True,
+					"message": "All analysis attempts failed"
+				}
+	
+	return {
+		"error": "Unexpected error in video analysis",
+		"waste_type": "unknown", 
+		"disposal_verified": False,
+		"fallback": True,
+		"message": "Analysis failed"
+	}
+
+
+def _perform_gemini_analysis(frames: List[np.ndarray]) -> Dict[str, Any]:
+	"""
+	Perform a single Gemini analysis attempt
+	"""
+	try:
+		# Convert OpenCV frames to PIL Images
+		pil_images = []
+		for frame in frames:
+			image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+			pil_image = Image.fromarray(image_rgb)
+			pil_images.append(pil_image)
+		
+		# Initialize Gemini model
+		model = genai.GenerativeModel('gemini-2.0-flash')
+		
+		# Create optimized prompt for intelligent frame analysis
+		prompt = """You are analyzing a sequence of 5 carefully selected frames from a waste disposal video. Each frame was chosen to show a specific part of the disposal process.
+
+FRAME SEQUENCE ANALYSIS:
+- F1: Early frame showing waste item in user's hand (item identification)
+- F2: Pre-disposal frame (item still in hand, approaching bin)
+- F3: Peak action frame (disposal moment - highest motion detected)
+- F4: Post-disposal frame (item being released/dropped)
+- F5: Final verification frame (item should be in bin)
+
+CRITICAL ANALYSIS RULES:
+1. IGNORE hands, dustbins, and containers - focus ONLY on the actual waste item
+2. Look for actual waste: bottles, cans, paper, food, packaging, etc.
+3. Verify the item moves from hand to inside the bin across the sequence
+4. F3 should show the disposal action (item being thrown/dropped into bin)
+5. F5 should show the item is no longer in hand and is in/on the bin
+
+DETECTION CRITERIA:
+- Item clearly visible in F1/F2 (in user's hand)
+- Item moves toward bin in F2-F3
+- Disposal action visible in F3 (item being released)
+- Item no longer in hand in F4-F5
+- Item appears to be in/on the bin in F5
+
+Respond with JSON only:
+{'waste_type': '[exact item name from F1/F2]', 'disposal_verified': [true/false], 'reasoning': '[step-by-step analysis of what you see in each frame]'}"""
+		
+		# Generate response with all 5 images
+		response = model.generate_content([prompt] + pil_images)
+		
+		# Debug logging
+		print(f"Gemini API Response: {response.text if response and response.text else 'No response'}")
+		
+		if not response or not response.text:
+			return {
+				"error": "Empty response from Gemini API",
+				"waste_type": "unknown",
+				"disposal_verified": False,
+				"fallback": True,
+				"message": "Gemini returned empty response"
+			}
+		
+		# Parse JSON response
+		response_text = response.text.strip()
+		
+		# Try to extract JSON from response
+		json_text = None
+		if '```json' in response_text:
+			json_start = response_text.find('```json') + 7
+			json_end = response_text.find('```', json_start)
+			json_text = response_text[json_start:json_end].strip()
+		elif '{' in response_text and '}' in response_text:
+			json_start = response_text.find('{')
+			json_end = response_text.rfind('}') + 1
+			json_text = response_text[json_start:json_end]
+		
+		if not json_text:
+			return {
+				"waste_type": "unknown",
+				"disposal_verified": False,
+				"fallback": False,
+				"raw_response": response_text,
+				"message": "Unable to parse response"
+			}
+		
+		try:
+			result = json.loads(json_text)
+		except json.JSONDecodeError:
+			return {
+				"waste_type": "unknown",
+				"disposal_verified": False,
+				"fallback": False,
+				"raw_response": response_text,
+				"message": "JSON parsing failed"
+			}
+		
+		# Validate result structure
+		if not isinstance(result, dict):
+			return {
+				"error": "Invalid response structure from Gemini",
+				"waste_type": "unknown",
+				"disposal_verified": False,
+				"fallback": True,
+				"message": "Invalid response structure"
+			}
+		
+		# Ensure required keys exist
+		if "waste_type" not in result:
+			result["waste_type"] = "unknown"
+		if "disposal_verified" not in result:
+			result["disposal_verified"] = False
+		if "reasoning" not in result:
+			result["reasoning"] = "No reasoning provided"
+		
+		return result
+		
+	except Exception as e:
+		print(f"Gemini video analysis error: {str(e)}")
+		return {
+			"error": f"Gemini video analysis failed: {str(e)}", 
+			"waste_type": "unknown",
+			"disposal_verified": False,
+			"fallback": True,
+			"message": "API error occurred"
+		}
+
+
+def analyze_with_gemini(image: np.ndarray) -> Dict[str, Any]:
+	"""
+	Analyze waste items in image using Gemini API as the primary detection system
+	Returns comprehensive waste analysis with classification and disposal recommendations
+	"""
+	if not GEMINI_API_KEY:
+		return {
+			"error": "Gemini API key not configured", 
+			"items": [], 
+			"fallback": True,
+			"message": "Gemini API not available"
+		}
+	
+	try:
+		# Convert OpenCV image to PIL Image
+		image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+		pil_image = Image.fromarray(image_rgb)
+		
+		# Initialize Gemini model
+		model = genai.GenerativeModel('gemini-2.0-flash')
+		
+		# Create comprehensive prompt for waste detection and analysis
+		prompt = """
+		You are an expert waste detection and classification AI. Analyze this image thoroughly and identify ALL waste items present.
+		
+		IMPORTANT: You MUST respond ONLY with valid JSON. Do not include any other text.
+		
+		For each waste item found, provide:
+		- name: Specific item name/type
+		- category: "recyclable", "hazardous", or "general" 
+		- description: Detailed description of the item
+		- disposal_tip: Specific instructions for proper disposal
+		- environmental_impact: Brief note on environmental impact
+		
+		Look for ALL types of waste including:
+		- Plastic bottles, containers, bags, packaging
+		- Aluminum/metal cans, containers
+		- Glass bottles, jars, containers
+		- Cardboard, paper products, newspapers
+		- Batteries (all types)
+		- Chemical containers, paint cans
+		- Light bulbs, fluorescent tubes
+		- Electronic waste, cables, devices
+		- Food waste, organic matter
+		- Textiles, clothing
+		- Construction materials
+		- Medical waste
+		- Any other waste materials
+		
+		Classification guidelines:
+		- recyclable: Items that can be recycled (plastic bottles, metal cans, glass, paper, cardboard)
+		- hazardous: Items that are dangerous or require special disposal (batteries, chemicals, electronics, medical waste)
+		- general: Items that go to regular landfill (food waste, non-recyclable plastics, mixed materials)
+		
+		If no waste items are found, return: {"items": [], "summary": "No waste items detected in the image"}
+		
+		Response format (JSON only):
+		{
+			"items": [
+				{
+					"name": "specific item name",
+					"category": "recyclable|hazardous|general",
+					"description": "detailed description",
+					"disposal_tip": "specific disposal instructions",
+					"environmental_impact": "brief environmental note"
+				}
+			],
+			"summary": "Overall waste analysis summary"
+		}
+		"""
+		
+		# Generate response
+		response = model.generate_content([prompt, pil_image])
+		
+		if not response or not response.text:
+			return {
+				"error": "Empty response from Gemini API",
+				"items": [],
+				"fallback": True,
+				"message": "Gemini returned empty response"
+			}
+		
+		# Parse JSON response
+		response_text = response.text.strip()
+		
+		# Try to extract JSON from response
+		json_text = None
+		if '```json' in response_text:
+			json_start = response_text.find('```json') + 7
+			json_end = response_text.find('```', json_start)
+			json_text = response_text[json_start:json_end].strip()
+		elif '{' in response_text and '}' in response_text:
+			json_start = response_text.find('{')
+			json_end = response_text.rfind('}') + 1
+			json_text = response_text[json_start:json_end]
+		
+		if not json_text:
+			return {
+				"items": [],
+				"fallback": False,
+				"raw_response": response_text,
+				"summary": "Unable to parse response"
+			}
+		
+		try:
+			result = json.loads(json_text)
+		except json.JSONDecodeError:
+			return {
+				"items": [],
+				"fallback": False,
+				"raw_response": response_text,
+				"summary": "JSON parsing failed"
+			}
+		
+		# Validate result structure
+		if not isinstance(result, dict):
+			return {
+				"error": "Invalid response structure from Gemini",
+				"items": [],
+				"fallback": True,
+				"message": "Invalid response structure"
+			}
+		
+		# Ensure items key exists
+		if "items" not in result:
+			result["items"] = []
+		
+		return result
+		
+	except Exception as e:
+		print(f"Gemini API error: {str(e)}")
+		return {
+			"error": f"Gemini analysis failed: {str(e)}", 
+			"items": [], 
+			"fallback": True,
+			"message": "API error occurred"
+		}
+
+
+def categorize_gemini_items(gemini_result: Dict[str, Any]) -> Dict[str, List[Dict[str, Any]]]:
+	"""
+	Categorize items detected by Gemini into recyclable, hazardous, and general waste
+	Returns full item details for each category
+	"""
+	recyclable_items = []
+	hazardous_items = []
+	general_items = []
+	
+	if "items" in gemini_result:
+		for item in gemini_result["items"]:
+			category = item.get("category", "general").lower()
+			
+			# Categorize based on Gemini's classification
+			if category == "recyclable":
+				recyclable_items.append(item)
+			elif category == "hazardous":
+				hazardous_items.append(item)
+			else:
+				general_items.append(item)
+	
+	return {
+		"recyclable": recyclable_items,
+		"hazardous": hazardous_items,
+		"general": general_items
+	}
 
 
 def get_db_connection() -> Connection:
@@ -58,6 +693,7 @@ def seed_coupons(conn: Connection) -> None:
 
 def init_db() -> None:
 	with get_db_connection() as conn:
+		# Create users table with new schema
 		conn.execute(
 			(
 				'CREATE TABLE IF NOT EXISTS users ('
@@ -65,10 +701,25 @@ def init_db() -> None:
 				'  username TEXT UNIQUE NOT NULL,'
 				'  password_hash BLOB NOT NULL,'
 				'  total_points INTEGER NOT NULL DEFAULT 100,'
-				'  last_awarded_signature TEXT'
+				'  last_awarded_signature TEXT,'
+				'  country TEXT NOT NULL,'
+				'  state TEXT NOT NULL,'
+				'  city TEXT NOT NULL'
 				')'
 			)
 		)
+		
+		# Check if location columns exist, if not add them
+		cursor = conn.execute("PRAGMA table_info(users)")
+		columns = [column[1] for column in cursor.fetchall()]
+		
+		if 'country' not in columns:
+			print("Adding location columns to existing users table...")
+			conn.execute('ALTER TABLE users ADD COLUMN country TEXT DEFAULT "Unknown"')
+			conn.execute('ALTER TABLE users ADD COLUMN state TEXT DEFAULT "Unknown"')
+			conn.execute('ALTER TABLE users ADD COLUMN city TEXT DEFAULT "Unknown"')
+			conn.commit()
+			print("Location columns added successfully")
 		# Coupons table
 		conn.execute(
 			(
@@ -107,6 +758,39 @@ def init_db() -> None:
 		row = conn.execute('SELECT id FROM stats WHERE id = 1').fetchone()
 		if row is None:
 			conn.execute('INSERT INTO stats (id, detections, redemptions) VALUES (1, 0, 0)')
+		
+		# Image hashes table for duplicate detection
+		conn.execute(
+			'CREATE TABLE IF NOT EXISTS image_hashes ('
+			'  id INTEGER PRIMARY KEY AUTOINCREMENT,'
+			'  user_id INTEGER NOT NULL,'
+			'  image_hash TEXT NOT NULL,'
+			'  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,'
+			'  FOREIGN KEY(user_id) REFERENCES users(id),'
+			'  UNIQUE(user_id, image_hash)'
+			')'
+		)
+		# WasteBounty table for bounty system
+		conn.execute(
+			'CREATE TABLE IF NOT EXISTS waste_bounty ('
+			'  id INTEGER PRIMARY KEY AUTOINCREMENT,'
+			'  reporter_user_id INTEGER NOT NULL,'
+			'  latitude REAL NOT NULL,'
+			'  longitude REAL NOT NULL,'
+			'  country TEXT NOT NULL,'
+			'  state TEXT NOT NULL,'
+			'  city TEXT NOT NULL,'
+			'  bounty_points INTEGER NOT NULL DEFAULT 200,'
+			'  waste_image_url TEXT NOT NULL,'
+			'  status TEXT NOT NULL DEFAULT "REPORTED",'
+			'  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,'
+			'  claimed_at DATETIME,'
+			'  claimed_by_user_id INTEGER,'
+			'  completed_at DATETIME,'
+			'  FOREIGN KEY(reporter_user_id) REFERENCES users(id),'
+			'  FOREIGN KEY(claimed_by_user_id) REFERENCES users(id)'
+			')'
+		)
 		conn.commit()
 
 
@@ -134,9 +818,12 @@ def signup() -> Tuple[Any, int]:
 	data: Dict[str, Any] = request.get_json(silent=True) or {}
 	username: str = (data.get('username') or '').strip()
 	password: str = (data.get('password') or '').strip()
+	country: str = (data.get('country') or '').strip()
+	state: str = (data.get('state') or '').strip()
+	city: str = (data.get('city') or '').strip()
 
-	if not username or not password:
-		return jsonify({"error": "username and password are required"}), 400
+	if not username or not password or not country or not state or not city:
+		return jsonify({"error": "username, password, country, state, and city are required"}), 400
 
 	# Hash password
 	password_bytes = password.encode('utf-8')
@@ -146,16 +833,22 @@ def signup() -> Tuple[Any, int]:
 	try:
 		with get_db_connection() as conn:
 			conn.execute(
-				'INSERT INTO users (username, password_hash, total_points) VALUES (?, ?, ?)',
-				(username, password_hash, 100),
+				'INSERT INTO users (username, password_hash, total_points, country, state, city) VALUES (?, ?, ?, ?, ?, ?)',
+				(username, password_hash, 100, country, state, city),
 			)
 			conn.commit()
 	except sqlite3.IntegrityError:
 		return jsonify({"error": "username already exists"}), 409
+	except Exception as e:
+		print(f"Database error during signup: {str(e)}")
+		return jsonify({"error": f"Database error: {str(e)}"}), 500
 
 	user = {
 		"username": username,
 		"total_points": 100,
+		"country": country,
+		"state": state,
+		"city": city,
 	}
 	# Simple token stub; replace with real JWT/session later
 	token = f"token_{username}"
@@ -252,88 +945,703 @@ def list_transactions() -> Tuple[Any, int]:
 	return jsonify({"transactions": transactions}), 200
 
 
+@app.route('/api/create_bounty', methods=['POST'])
+def create_bounty() -> Tuple[Any, int]:
+	"""
+	Create a new waste bounty from a geotagged photo
+	"""
+	username = parse_username_from_auth()
+	if not username:
+		return jsonify({"error": "missing auth token"}), 401
+
+	if 'bounty_report_photo' not in request.files:
+		return jsonify({"error": "no photo uploaded"}), 400
+	
+	file = request.files['bounty_report_photo']
+	if file.filename == '':
+		return jsonify({"error": "empty filename"}), 400
+
+	# Read file bytes
+	file_bytes = file.read()
+	
+	# Extract GPS coordinates from image
+	latitude, longitude = extract_gps_from_image(file_bytes)
+	if latitude is None or longitude is None:
+		return jsonify({"error": "Photo must contain valid GPS location data. Please enable location services and take a new photo."}), 400
+	
+	# Reverse geocode to get address components
+	address_data = reverse_geocode(latitude, longitude)
+	if not address_data:
+		return jsonify({"error": "Unable to determine location from GPS coordinates"}), 400
+	
+	# Get user info
+	with get_db_connection() as conn:
+		row = conn.execute('SELECT id FROM users WHERE username = ?', (username,)).fetchone()
+		if row is None:
+			return jsonify({"error": "user not found"}), 404
+		user_id = int(row[0])
+	
+	# Save image to a temporary location (in production, use cloud storage)
+	image_filename = f"bounty_{user_id}_{int(time.time())}.jpg"
+	image_path = os.path.join(os.path.dirname(__file__), 'uploads', image_filename)
+	
+	# Create uploads directory if it doesn't exist
+	os.makedirs(os.path.dirname(image_path), exist_ok=True)
+	
+	with open(image_path, 'wb') as f:
+		f.write(file_bytes)
+	
+	# Create bounty record
+	with get_db_connection() as conn:
+		conn.execute(
+			'INSERT INTO waste_bounty (reporter_user_id, latitude, longitude, country, state, city, waste_image_url) VALUES (?, ?, ?, ?, ?, ?, ?)',
+			(user_id, latitude, longitude, address_data['country'], address_data['state'], address_data['city'], f"/uploads/{image_filename}")
+		)
+		conn.commit()
+	
+	return jsonify({
+		"message": "Bounty created successfully",
+		"location": {
+			"latitude": latitude,
+			"longitude": longitude,
+			"country": address_data['country'],
+			"state": address_data['state'],
+			"city": address_data['city']
+		}
+	}), 201
+
+
+@app.route('/api/bounties', methods=['GET'])
+def get_bounties() -> Tuple[Any, int]:
+	"""
+	Get active bounties for the user's location
+	"""
+	username = parse_username_from_auth()
+	if not username:
+		return jsonify({"error": "missing auth token"}), 401
+
+	# Get user's location
+	with get_db_connection() as conn:
+		row = conn.execute('SELECT country, state, city FROM users WHERE username = ?', (username,)).fetchone()
+		if row is None:
+			return jsonify({"error": "user not found"}), 404
+		user_country, user_state, user_city = row[0], row[1], row[2]
+	
+	# Get active bounties in user's location
+	with get_db_connection() as conn:
+		rows = conn.execute(
+			'SELECT id, latitude, longitude, country, state, city, bounty_points, waste_image_url, created_at FROM waste_bounty WHERE status = "REPORTED" AND country = ? AND state = ? AND city = ? ORDER BY created_at DESC',
+			(user_country, user_state, user_city)
+		).fetchall()
+		
+		bounties = []
+		for row in rows:
+			bounties.append({
+				"id": row[0],
+				"latitude": row[1],
+				"longitude": row[2],
+				"country": row[3],
+				"state": row[4],
+				"city": row[5],
+				"bounty_points": row[6],
+				"waste_image_url": row[7],
+				"created_at": row[8]
+			})
+	
+	return jsonify({"bounties": bounties}), 200
+
+
+def verify_cleanup_with_gemini(original_image: np.ndarray, before_image: np.ndarray, after_image: np.ndarray) -> Dict[str, Any]:
+	"""
+	Verify cleanup using Gemini API with the exact prompt specified
+	"""
+	if not GEMINI_API_KEY:
+		return {
+			"error": "Gemini API key not configured",
+			"scene_match": False,
+			"waste_present_before": False,
+			"cleanup_verified": False,
+			"fallback": True
+		}
+	
+	try:
+		# Convert OpenCV images to PIL Images
+		images = []
+		for img in [original_image, before_image, after_image]:
+			image_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+			pil_image = Image.fromarray(image_rgb)
+			images.append(pil_image)
+		
+		# Initialize Gemini model
+		model = genai.GenerativeModel('gemini-2.0-flash')
+		
+		# Use the exact prompt specified
+		prompt = """Analyze this sequence of three images for cleanup verification: Image 1 (Original Report Photo), Image 2 (User's Before Cleanup), and Image 3 (User's After Cleanup). GPS has confirmed Image 2 and 3 are at the correct location.
+Scene Match: Based on static background features (e.g., walls, trees, unique objects), confirm if Image 2 and Image 3 show the exact same scene/viewpoint (excluding the garbage itself). (Respond with: scene_match: true/false).
+Waste Verification: Is there significant garbage visible in Image 2?
+Cleanup Result: Is the garbage visible in Image 2 now absent or removed in Image 3?
+Respond with a JSON object: {'scene_match': [true/false], 'waste_present_before': [true/false], 'cleanup_verified': [true/false]}."""
+		
+		# Generate response
+		response = model.generate_content([prompt] + images)
+		
+		if not response or not response.text:
+			return {
+				"error": "Empty response from Gemini API",
+				"scene_match": False,
+				"waste_present_before": False,
+				"cleanup_verified": False,
+				"fallback": True
+			}
+		
+		# Parse JSON response
+		response_text = response.text.strip()
+		
+		# Try to extract JSON from response
+		json_text = None
+		if '```json' in response_text:
+			json_start = response_text.find('```json') + 7
+			json_end = response_text.find('```', json_start)
+			json_text = response_text[json_start:json_end].strip()
+		elif '{' in response_text and '}' in response_text:
+			json_start = response_text.find('{')
+			json_end = response_text.rfind('}') + 1
+			json_text = response_text[json_start:json_end]
+		
+		if not json_text:
+			return {
+				"scene_match": False,
+				"waste_present_before": False,
+				"cleanup_verified": False,
+				"fallback": False,
+				"raw_response": response_text
+			}
+		
+		try:
+			result = json.loads(json_text)
+		except json.JSONDecodeError:
+			return {
+				"scene_match": False,
+				"waste_present_before": False,
+				"cleanup_verified": False,
+				"fallback": False,
+				"raw_response": response_text
+			}
+		
+		# Ensure required keys exist
+		if "scene_match" not in result:
+			result["scene_match"] = False
+		if "waste_present_before" not in result:
+			result["waste_present_before"] = False
+		if "cleanup_verified" not in result:
+			result["cleanup_verified"] = False
+		
+		return result
+		
+	except Exception as e:
+		print(f"Gemini cleanup verification error: {str(e)}")
+		return {
+			"error": f"Gemini cleanup verification failed: {str(e)}",
+			"scene_match": False,
+			"waste_present_before": False,
+			"cleanup_verified": False,
+			"fallback": True
+		}
+
+
+@app.route('/api/verify_cleanup', methods=['POST'])
+def verify_cleanup() -> Tuple[Any, int]:
+	"""
+	Verify cleanup submission with GPS validation and Gemini AI analysis
+	"""
+	username = parse_username_from_auth()
+	if not username:
+		return jsonify({"error": "missing auth token"}), 401
+
+	# Get bounty ID from form data
+	bounty_id = request.form.get('bounty_id')
+	if not bounty_id:
+		return jsonify({"error": "bounty_id is required"}), 400
+
+	# Check for required files
+	if 'before_cleanup_photo' not in request.files or 'after_cleanup_photo' not in request.files:
+		return jsonify({"error": "both before and after cleanup photos are required"}), 400
+	
+	before_file = request.files['before_cleanup_photo']
+	after_file = request.files['after_cleanup_photo']
+	
+	if before_file.filename == '' or after_file.filename == '':
+		return jsonify({"error": "empty filenames"}), 400
+
+	# Read file bytes
+	before_bytes = before_file.read()
+	after_bytes = after_file.read()
+	
+	# Extract GPS coordinates from both photos
+	before_lat, before_lon = extract_gps_from_image(before_bytes)
+	after_lat, after_lon = extract_gps_from_image(after_bytes)
+	
+	if before_lat is None or before_lon is None:
+		return jsonify({"error": "Before cleanup photo must contain valid GPS location data"}), 400
+	
+	if after_lat is None or after_lon is None:
+		return jsonify({"error": "After cleanup photo must contain valid GPS location data"}), 400
+	
+	# Get bounty information
+	with get_db_connection() as conn:
+		row = conn.execute('SELECT latitude, longitude, waste_image_url, status FROM waste_bounty WHERE id = ?', (bounty_id,)).fetchone()
+		if row is None:
+			return jsonify({"error": "bounty not found"}), 404
+		
+		bounty_lat, bounty_lon, original_image_url, status = row[0], row[1], row[2], row[3]
+		
+		if status != 'REPORTED':
+			return jsonify({"error": "bounty is no longer available"}), 400
+	
+	# Validate GPS coordinates are within 5-10 meter radius
+	before_distance = calculate_distance(bounty_lat, bounty_lon, before_lat, before_lon)
+	after_distance = calculate_distance(bounty_lat, bounty_lon, after_lat, after_lon)
+	
+	if before_distance > 10 or after_distance > 10:
+		return jsonify({
+			"error": f"Photos must be taken within 10 meters of the bounty location. Before: {before_distance:.1f}m, After: {after_distance:.1f}m"
+		}), 400
+	
+	# Load original image for comparison
+	original_image_path = os.path.join(os.path.dirname(__file__), original_image_url.lstrip('/'))
+	if not os.path.exists(original_image_path):
+		return jsonify({"error": "original bounty image not found"}), 500
+	
+	# Convert images to OpenCV format for Gemini analysis
+	original_image = cv2.imread(original_image_path)
+	before_image = cv2.imdecode(np.frombuffer(before_bytes, np.uint8), cv2.IMREAD_COLOR)
+	after_image = cv2.imdecode(np.frombuffer(after_bytes, np.uint8), cv2.IMREAD_COLOR)
+	
+	# Verify cleanup with Gemini AI
+	verification_result = verify_cleanup_with_gemini(original_image, before_image, after_image)
+	
+	# Check if all three conditions are met
+	scene_match = verification_result.get("scene_match", False)
+	waste_present_before = verification_result.get("waste_present_before", False)
+	cleanup_verified = verification_result.get("cleanup_verified", False)
+	
+	# Get user info
+	with get_db_connection() as conn:
+		row = conn.execute('SELECT id, total_points FROM users WHERE username = ?', (username,)).fetchone()
+		if row is None:
+			return jsonify({"error": "user not found"}), 404
+		user_id, current_points = int(row[0]), int(row[1])
+	
+	# Process verification result
+	if scene_match and waste_present_before and cleanup_verified:
+		# Cleanup approved - update bounty and award points
+		with get_db_connection() as conn:
+			# Get bounty points
+			bounty_row = conn.execute('SELECT bounty_points FROM waste_bounty WHERE id = ?', (bounty_id,)).fetchone()
+			bounty_points = int(bounty_row[0]) if bounty_row else 200
+			
+			# Update bounty status
+			conn.execute(
+				'UPDATE waste_bounty SET status = "CLOSED", claimed_by_user_id = ?, claimed_at = CURRENT_TIMESTAMP, completed_at = CURRENT_TIMESTAMP WHERE id = ?',
+				(user_id, bounty_id)
+			)
+			
+			# Award points to user
+			new_total = current_points + bounty_points
+			conn.execute('UPDATE users SET total_points = ? WHERE id = ?', (new_total, user_id))
+			conn.execute('INSERT INTO transactions (user_id, points_change, reason) VALUES (?, ?, ?)', (user_id, bounty_points, f'Bounty Cleanup Completed - Bounty #{bounty_id}'))
+			conn.commit()
+		
+		return jsonify({
+			"message": "Cleanup verified successfully! Points awarded.",
+			"points_awarded": bounty_points,
+			"total_points": new_total,
+			"verification_result": verification_result
+		}), 200
+	else:
+		# Cleanup not approved
+		reasons = []
+		if not scene_match:
+			reasons.append("Scene mismatch - photos don't show the same location")
+		if not waste_present_before:
+			reasons.append("No significant waste detected in before photo")
+		if not cleanup_verified:
+			reasons.append("Cleanup not verified - waste still present in after photo")
+		
+		return jsonify({
+			"message": "Cleanup verification failed",
+			"reasons": reasons,
+			"verification_result": verification_result
+		}), 400
+
+
 @app.route('/api/detect', methods=['POST'])
 def detect() -> Tuple[Any, int]:
 	username = parse_username_from_auth()
 	if not username:
 		return jsonify({"error": "missing auth token"}), 401
 
-	if 'file' not in request.files:
-		return jsonify({"error": "no file uploaded"}), 400
-	file = request.files['file']
+	# Get input type from form data
+	input_type = request.form.get('input_type', 'photo')
+	
+	# Determine which file field to use based on input type
+	file_field = None
+	if input_type == 'photo':
+		file_field = 'photo_file'
+	elif input_type == 'video_gallery':
+		file_field = 'video_gallery_file'
+	elif input_type == 'video_camera':
+		file_field = 'video_camera_file'
+	else:
+		return jsonify({"error": "invalid input type"}), 400
+
+	if file_field not in request.files:
+		return jsonify({"error": f"no {file_field} uploaded"}), 400
+	file = request.files[file_field]
 	if file.filename == '':
 		return jsonify({"error": "empty filename"}), 400
 
-	# Read image bytes to numpy array
+	# Read file bytes
 	file_bytes = file.read()
-	np_arr = np.frombuffer(file_bytes, np.uint8)
-	image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-	if image is None:
-		return jsonify({"error": "invalid image"}), 400
+	
+	# Process based on input type
+	if input_type == 'photo':
+		# Process as image
+		np_arr = np.frombuffer(file_bytes, np.uint8)
+		image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+		if image is None:
+			return jsonify({"error": "invalid image"}), 400
+		
+		# Generate image hash for duplicate detection
+		file_hash = generate_image_hash(file_bytes)
+		
+		# Use existing image analysis
+		gemini_result = analyze_with_gemini(image)
+		gemini_categorized = categorize_gemini_items(gemini_result)
+		gemini_available = not gemini_result.get("fallback", False)
+		
+		# Extract item names for signature and points calculation
+		all_detected_items = []
+		recyclable_items = []
+		hazardous_items = []
+		general_items = []
+		
+		for item in gemini_result.get("items", []):
+			item_name = item.get("name", "Unknown item")
+			all_detected_items.append(item_name)
+			
+			category = item.get("category", "general").lower()
+			if category == "recyclable":
+				recyclable_items.append(item_name)
+			elif category == "hazardous":
+				hazardous_items.append(item_name)
+			else:
+				general_items.append(item_name)
 
-	model = get_model()
-	results = model.predict(image, conf=0.6)
-	names = model.names
+		# Build a signature of all detected items to prevent repeat spamming
+		detection_signature = ','.join(sorted(all_detected_items)) if all_detected_items else ''
 
-	detected_items: Set[str] = set()
-	for result in results:
-		for cls_idx in result.boxes.cls:
-			try:
-				label = names[int(cls_idx)]
-			except Exception:
-				continue
-			detected_items.add(label)
+		# Points awarding logic based on Gemini classification
+		awarded_points = 0
+		message = ''
+		if recyclable_items or hazardous_items:
+			awarded_points = POINTS_PER_DETECTION * len(set(recyclable_items) | set(hazardous_items))
+			message = 'Recyclable/Hazardous waste detected. Points awarded.'
+		elif all_detected_items:
+			awarded_points = NON_RECYCLABLE_FLAT_POINTS
+			message = 'Waste detected. Flat points awarded.'
+		else:
+			message = 'No waste detected.'
+		
+		# Check for duplicates and update database
+		duplicate = False
+		with get_db_connection() as conn:
+			row = conn.execute('SELECT id, total_points FROM users WHERE username = ?', (username,)).fetchone()
+			if row is None:
+				return jsonify({"error": "user not found"}), 404
+			user_id = int(row[0])
+			current_total = int(row[1])
 
-	recyclable_items = list(sorted(RECYCLABLE.intersection(detected_items)))
-	hazardous_items = list(sorted(HAZARDOUS.intersection(detected_items)))
+			# Check if this image hash already exists for this user
+			existing_hash = conn.execute(
+				'SELECT id FROM image_hashes WHERE user_id = ? AND image_hash = ?', 
+				(user_id, file_hash)
+			).fetchone()
 
-	# Build a signature of all detected items to prevent repeat spamming
-	detection_signature = ','.join(sorted(list(detected_items))) if detected_items else ''
+			if existing_hash:
+				duplicate = True
+				new_total = current_total
+				message = 'This exact image has already been analyzed. No additional points awarded.'
+			else:
+				# Store the image hash and award points
+				new_total = current_total + awarded_points
+				conn.execute('UPDATE users SET total_points = ? WHERE id = ?', (new_total, user_id))
+				conn.execute('INSERT INTO image_hashes (user_id, image_hash) VALUES (?, ?)', (user_id, file_hash))
+				if awarded_points != 0:
+					conn.execute('INSERT INTO transactions (user_id, points_change, reason) VALUES (?, ?, ?)', (user_id, awarded_points, 'Waste Detected'))
+					conn.execute('UPDATE stats SET detections = detections + 1 WHERE id = 1')
+				conn.commit()
 
-	# Default awarding logic
-	awarded_points = 0
-	message = ''
-	if recyclable_items or hazardous_items:
-		awarded_points = POINTS_PER_DETECTION * len(set(recyclable_items) | set(hazardous_items))
-		message = 'Recyclable/Hazardous waste detected. Points awarded.'
-	elif detected_items:
-		awarded_points = NON_RECYCLABLE_FLAT_POINTS
-		message = 'Only non-recyclables detected. Flat points awarded.'
+		# Response with Gemini-only results
+		response = {
+			"detected_items": sorted(all_detected_items),
+			"recyclable_items": sorted(recyclable_items),
+			"hazardous_items": sorted(hazardous_items),
+			"general_items": sorted(general_items),
+			"awarded_points": 0 if duplicate else awarded_points,
+			"total_points": new_total,
+			"duplicate": duplicate,
+			"message": message,
+			"input_type": input_type,
+			"gemini_analysis": {
+				"available": gemini_available,
+				"items": gemini_result.get("items", []),
+				"summary": gemini_result.get("summary", ""),
+				"error": gemini_result.get("error", None),
+				"fallback": gemini_result.get("fallback", False),
+				"message": gemini_result.get("message", None)
+			}
+		}
+		return jsonify(response), 200
+	
 	else:
-		message = 'No waste detected.'
+		# Process as video
+		try:
+			# Extract keyframes from video
+			keyframes = extract_keyframes_from_video(file_bytes)
+			
+			# Analyze video sequence with Gemini
+			video_analysis = analyze_video_sequence_with_gemini(keyframes)
+			
+			# Generate hash for duplicate detection (using first frame)
+			first_frame_bytes = cv2.imencode('.jpg', keyframes[0])[1].tobytes()
+			file_hash = generate_image_hash(first_frame_bytes)
+			
+			# Determine points based on video analysis with additional validation
+			awarded_points = 0
+			message = ''
+			
+			# Additional validation to prevent false positives
+			waste_type = video_analysis.get("waste_type", "unknown").lower()
+			disposal_verified = video_analysis.get("disposal_verified", False)
+			reasoning = video_analysis.get("reasoning", "").lower()
+			
+			print(f"Video validation: waste_type='{waste_type}', disposal_verified={disposal_verified}")
+			print(f"Reasoning: {reasoning}")
+			
+			# Check for invalid waste types (hands, dustbins, etc.)
+			invalid_types = ["hand", "hands", "dustbin", "trash", "bin", "container", "bag", "unknown"]
+			is_valid_waste_type = not any(invalid_type in waste_type for invalid_type in invalid_types)
+			
+			# Check reasoning for disposal action keywords (more lenient)
+			disposal_keywords = ["deposited", "thrown", "placed", "disposed", "inside", "into", "bin", "dustbin", "dropped", "put"]
+			has_disposal_action = any(keyword in reasoning for keyword in disposal_keywords)
+			
+			# More lenient validation - if AI says disposal is verified and waste type is valid, trust it
+			if disposal_verified and is_valid_waste_type:
+				# Award points for successful disposal verification
+				awarded_points = POINTS_PER_DETECTION
+				message = f'Disposal verified for {video_analysis.get("waste_type", "waste item")}. Points awarded.'
+			elif not disposal_verified:
+				message = 'Disposal not verified - no clear evidence of waste being deposited into bin.'
+			elif not is_valid_waste_type:
+				message = f'Invalid waste type detected ({waste_type}). Only actual waste items qualify for points.'
+			else:
+				message = 'Disposal verification failed - insufficient evidence of proper waste disposal.'
+			
+			# Check for duplicates and update database
+			duplicate = False
+			with get_db_connection() as conn:
+				row = conn.execute('SELECT id, total_points FROM users WHERE username = ?', (username,)).fetchone()
+				if row is None:
+					return jsonify({"error": "user not found"}), 404
+				user_id = int(row[0])
+				current_total = int(row[1])
 
-	# Check last awarded signature to prevent duplicate awards for identical detections
-	duplicate = False
+				# Check if this video hash already exists for this user
+				existing_hash = conn.execute(
+					'SELECT id FROM image_hashes WHERE user_id = ? AND image_hash = ?', 
+					(user_id, file_hash)
+				).fetchone()
+
+				if existing_hash:
+					duplicate = True
+					new_total = current_total
+					message = 'This exact video has already been analyzed. No additional points awarded.'
+				else:
+					# Store the video hash and award points
+					new_total = current_total + awarded_points
+					conn.execute('UPDATE users SET total_points = ? WHERE id = ?', (new_total, user_id))
+					conn.execute('INSERT INTO image_hashes (user_id, image_hash) VALUES (?, ?)', (user_id, file_hash))
+					if awarded_points != 0:
+						conn.execute('INSERT INTO transactions (user_id, points_change, reason) VALUES (?, ?, ?)', (user_id, awarded_points, 'Video Disposal Verified'))
+						conn.execute('UPDATE stats SET detections = detections + 1 WHERE id = 1')
+					conn.commit()
+
+			# Response for video analysis
+			response = {
+				"detected_items": [video_analysis.get("waste_type", "unknown")] if video_analysis.get("disposal_verified", False) else [],
+				"recyclable_items": [],
+				"hazardous_items": [],
+				"general_items": [],
+				"awarded_points": 0 if duplicate else awarded_points,
+				"total_points": new_total,
+				"duplicate": duplicate,
+				"message": message,
+				"input_type": input_type,
+				"video_analysis": {
+					"waste_type": video_analysis.get("waste_type", "unknown"),
+					"disposal_verified": video_analysis.get("disposal_verified", False),
+					"reasoning": video_analysis.get("reasoning", "No reasoning provided"),
+					"available": not video_analysis.get("fallback", False),
+					"error": video_analysis.get("error", None),
+					"fallback": video_analysis.get("fallback", False),
+					"message": video_analysis.get("message", None)
+				}
+			}
+			return jsonify(response), 200
+			
+		except Exception as e:
+			return jsonify({"error": f"Video processing failed: {str(e)}"}), 500
+
+
+@app.route('/api/analyze-detailed', methods=['POST'])
+def analyze_detailed() -> Tuple[Any, int]:
+	"""
+	Detailed analysis endpoint that provides comprehensive waste analysis using Gemini AI
+	"""
+	username = parse_username_from_auth()
+	if not username:
+		return jsonify({"error": "missing auth token"}), 401
+
+	# Get input type from form data
+	input_type = request.form.get('input_type', 'photo')
+	
+	# Determine which file field to use based on input type
+	file_field = None
+	if input_type == 'photo':
+		file_field = 'photo_file'
+	elif input_type == 'video_gallery':
+		file_field = 'video_gallery_file'
+	elif input_type == 'video_camera':
+		file_field = 'video_camera_file'
+	else:
+		return jsonify({"error": "invalid input type"}), 400
+
+	if file_field not in request.files:
+		return jsonify({"error": f"no {file_field} uploaded"}), 400
+	file = request.files[file_field]
+	if file.filename == '':
+		return jsonify({"error": "empty filename"}), 400
+
+	# Read file bytes
+	file_bytes = file.read()
+	
+	# Process based on input type
+	if input_type == 'photo':
+		# Process as image
+		np_arr = np.frombuffer(file_bytes, np.uint8)
+		image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+		if image is None:
+			return jsonify({"error": "invalid image"}), 400
+
+		# Generate image hash for duplicate detection
+		file_hash = generate_image_hash(file_bytes)
+	else:
+		# Process as video
+		try:
+			# Extract keyframes from video
+			keyframes = extract_keyframes_from_video(file_bytes)
+			
+			# Generate hash for duplicate detection (using first frame)
+			first_frame_bytes = cv2.imencode('.jpg', keyframes[0])[1].tobytes()
+			file_hash = generate_image_hash(first_frame_bytes)
+		except Exception as e:
+			return jsonify({"error": f"Video processing failed: {str(e)}"}), 500
+
+	# Check if this exact file has been uploaded by this user before
 	with get_db_connection() as conn:
-		row = conn.execute('SELECT id, total_points, IFNULL(last_awarded_signature, "") FROM users WHERE username = ?', (username,)).fetchone()
+		row = conn.execute('SELECT id FROM users WHERE username = ?', (username,)).fetchone()
 		if row is None:
 			return jsonify({"error": "user not found"}), 404
 		user_id = int(row[0])
-		current_total = int(row[1])
-		last_sig = str(row[2]) if row[2] is not None else ''
 
-		if detection_signature and detection_signature == last_sig:
-			duplicate = True
-			new_total = current_total
-			message = 'This waste was already detected. No additional points awarded.'
-		else:
-			new_total = current_total + awarded_points
-			conn.execute('UPDATE users SET total_points = ?, last_awarded_signature = ? WHERE id = ?', (new_total, detection_signature, user_id))
-			if awarded_points != 0:
-				conn.execute('INSERT INTO transactions (user_id, points_change, reason) VALUES (?, ?, ?)', (user_id, awarded_points, 'Waste Detected'))
-				conn.execute('UPDATE stats SET detections = detections + 1 WHERE id = 1')
-			conn.commit()
+		# Check if this file hash already exists for this user
+		existing_hash = conn.execute(
+			'SELECT id FROM image_hashes WHERE user_id = ? AND image_hash = ?', 
+			(user_id, file_hash)
+		).fetchone()
 
-	response = {
-		"detected_items": sorted(list(detected_items)),
-		"recyclable_items": recyclable_items,
-		"hazardous_items": hazardous_items,
-		"awarded_points": 0 if duplicate else awarded_points,
-		"total_points": new_total,
-		"duplicate": duplicate,
-		"message": message,
-	}
-	return jsonify(response), 200
+		if existing_hash:
+			return jsonify({
+				"error": f"This exact {input_type} has already been analyzed by you. Please upload a different {input_type}.",
+				"duplicate": True
+			}), 409
+
+	# Get detailed analysis based on input type
+	if input_type == 'photo':
+		# Get detailed Gemini analysis for image
+		gemini_result = analyze_with_gemini(image)
+		
+		if "error" in gemini_result:
+			return jsonify({
+				"error": gemini_result["error"],
+				"gemini_available": GEMINI_API_KEY != ""
+			}), 500
+
+		# Categorize items
+		categorized = categorize_gemini_items(gemini_result)
+		
+		# Calculate potential points
+		potential_points = 0
+		recyclable_count = len(categorized["recyclable"])
+		hazardous_count = len(categorized["hazardous"])
+		general_count = len(categorized["general"])
+		
+		if recyclable_count > 0 or hazardous_count > 0:
+			potential_points = POINTS_PER_DETECTION * (recyclable_count + hazardous_count)
+		elif general_count > 0:
+			potential_points = NON_RECYCLABLE_FLAT_POINTS
+
+		response = {
+			"analysis": gemini_result,
+			"categorized_items": categorized,
+			"potential_points": potential_points,
+			"gemini_available": GEMINI_API_KEY != "",
+			"disposal_tips": [item.get("disposal_tip", "") for item in gemini_result.get("items", []) if item.get("disposal_tip")],
+			"environmental_impacts": [item.get("environmental_impact", "") for item in gemini_result.get("items", []) if item.get("environmental_impact")],
+			"summary": gemini_result.get("summary", ""),
+			"input_type": input_type
+		}
+		
+		return jsonify(response), 200
+	
+	else:
+		# Get detailed video analysis
+		video_analysis = analyze_video_sequence_with_gemini(keyframes)
+		
+		if "error" in video_analysis:
+			return jsonify({
+				"error": video_analysis["error"],
+				"gemini_available": GEMINI_API_KEY != ""
+			}), 500
+
+		# Calculate potential points for video
+		potential_points = 0
+		if video_analysis.get("disposal_verified", False):
+			potential_points = POINTS_PER_DETECTION
+
+		response = {
+			"video_analysis": video_analysis,
+			"potential_points": potential_points,
+			"gemini_available": GEMINI_API_KEY != "",
+			"waste_type": video_analysis.get("waste_type", "unknown"),
+			"disposal_verified": video_analysis.get("disposal_verified", False),
+			"reasoning": video_analysis.get("reasoning", "No reasoning provided"),
+			"input_type": input_type
+		}
+		
+		return jsonify(response), 200
 
 
 @app.route('/api/stats', methods=['GET'])

@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import EarnPoints from './EarnPoints';
+import WasteBounty from './WasteBounty';
 
 const RewardsShop = ({ onRedeem }) => {
   const [coupons, setCoupons] = useState([]);
@@ -74,12 +75,25 @@ const ProfileView = ({ user }) => {
         <div className="text-gray-400 text-sm">Total Points</div>
         <div className="text-gray-100 text-xl font-semibold">{user.total_points}</div>
       </div>
+      <div className="rounded-xl bg-white/5 border border-white/10 p-4">
+        <div className="text-gray-400 text-sm">Location</div>
+        <div className="text-gray-100 text-lg font-semibold">
+          {user.city}, {user.state}
+        </div>
+        <div className="text-gray-300 text-sm">{user.country}</div>
+      </div>
+      <div className="rounded-xl bg-white/5 border border-white/10 p-4">
+        <div className="text-gray-400 text-sm">Bounty Status</div>
+        <div className="text-gray-100 text-lg font-semibold">Active</div>
+        <div className="text-gray-300 text-sm">Can report & claim bounties</div>
+      </div>
       <div className="rounded-xl bg-white/5 border border-white/10 p-4 md:col-span-2">
         <div className="text-gray-400 text-sm mb-2">Eco Tips</div>
         <ul className="list-disc pl-6 text-gray-300 space-y-1 text-sm">
           <li>Rinse and recycle plastic bottles and cans.</li>
           <li>Separate hazardous waste like batteries and bulbs.</li>
           <li>Use reusable bags and containers to reduce plastic.</li>
+          <li>Report public waste spots to earn bounty points.</li>
         </ul>
       </div>
     </div>
@@ -108,6 +122,7 @@ const Dashboard = ({ currentUser, onLogout, setCurrentUser }) => {
 
   const tabs = [
     { key: 'detection', label: 'Earn Points', icon: '📸' },
+    { key: 'bounty', label: 'Waste Bounty', icon: '🗺️' },
     { key: 'rewards', label: 'Rewards', icon: '🎁' },
     { key: 'profile', label: 'Profile', icon: '👤' },
   ];
@@ -115,6 +130,8 @@ const Dashboard = ({ currentUser, onLogout, setCurrentUser }) => {
   let main;
   if (activeTab === 'detection') {
     main = <EarnPoints currentUser={currentUser} updatePoints={updatePoints} />;
+  } else if (activeTab === 'bounty') {
+    main = <WasteBounty currentUser={currentUser} updatePoints={updatePoints} />;
   } else if (activeTab === 'rewards') {
     main = <RewardsShop onRedeem={updatePoints} />;
   } else {
