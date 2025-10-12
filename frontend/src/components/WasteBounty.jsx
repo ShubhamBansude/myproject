@@ -1,6 +1,7 @@
 // src/components/WasteBounty.jsx
 
 import React, { useState, useEffect } from 'react';
+import EXIF from 'exif-js';
 
 const WasteBounty = ({ currentUser, updatePoints }) => {
     const [activeTab, setActiveTab] = useState('report'); // 'report', 'bounties', 'cleanup'
@@ -12,6 +13,8 @@ const WasteBounty = ({ currentUser, updatePoints }) => {
     // Report bounty states
     const [reportPhoto, setReportPhoto] = useState(null);
     const [reportPreview, setReportPreview] = useState(null);
+    const [reportPhotoSource, setReportPhotoSource] = useState('camera'); // 'camera' or 'gallery'
+    const [reportLocation, setReportLocation] = useState(null); // For gallery photos
     
     // Cleanup states
     const [selectedBounty, setSelectedBounty] = useState(null);
@@ -19,6 +22,8 @@ const WasteBounty = ({ currentUser, updatePoints }) => {
     const [afterPhoto, setAfterPhoto] = useState(null);
     const [beforePreview, setBeforePreview] = useState(null);
     const [afterPreview, setAfterPreview] = useState(null);
+    const [beforePhotoSource, setBeforePhotoSource] = useState('camera');
+    const [afterPhotoSource, setAfterPhotoSource] = useState('camera');
     const [cleanupStep, setCleanupStep] = useState('before'); // 'before', 'after', 'submit'
 
     // Load bounties on component mount
@@ -52,45 +57,68 @@ const WasteBounty = ({ currentUser, updatePoints }) => {
         }
     };
 
-    const validateGeotag = (file) => {
+    const getCurrentLocation = () => {
+        return new Promise((resolve, reject) => {
+            if (!navigator.geolocation) {
+                reject(new Error('Geolocation is not supported by this browser'));
+                return;
+            }
+            
+            navigator.geolocation.getCurrentPosition(
+                (position) => {
+                    resolve({
+                        latitude: position.coords.latitude,
+                        longitude: position.coords.longitude
+                    });
+                },
+                (error) => {
+                    reject(new Error('Unable to get current location: ' + error.message));
+                },
+                {
+                    enableHighAccuracy: true,
+                    timeout: 10000,
+                    maximumAge: 300000 // 5 minutes
+                }
+            );
+        });
+    };
+
+    const validateGeotag = (file, photoSource = 'camera') => {
         return new Promise((resolve, reject) => {
             const reader = new FileReader();
             reader.onload = (e) => {
-                const arrayBuffer = e.target.result;
-                const dataView = new DataView(arrayBuffer);
-                
-                // Check for EXIF header
-                if (dataView.getUint16(0) !== 0xFFD8) {
-                    reject(new Error('Not a valid JPEG file'));
-                    return;
-                }
-                
-                let offset = 2;
-                let hasGPS = false;
-                
-                while (offset < dataView.byteLength) {
-                    const marker = dataView.getUint16(offset);
-                    if (marker === 0xFFE1) { // APP1 marker (EXIF)
-                        const exifLength = dataView.getUint16(offset + 2);
-                        const exifData = new DataView(arrayBuffer, offset + 4, exifLength - 2);
+                const img = new Image();
+                img.onload = () => {
+                    EXIF.getData(img, function() {
+                        const lat = EXIF.getTag(this, "GPSLatitude");
+                        const latRef = EXIF.getTag(this, "GPSLatitudeRef");
+                        const lon = EXIF.getTag(this, "GPSLongitude");
+                        const lonRef = EXIF.getTag(this, "GPSLongitudeRef");
                         
-                        // Check for GPS IFD
-                        if (exifData.getUint32(0) === 0x45786966) { // "Exif" string
-                            hasGPS = true;
-                            break;
+                        if (lat && latRef && lon && lonRef) {
+                            // Photo has GPS data
+                            resolve({ hasGPS: true, file: file });
+                        } else if (photoSource === 'gallery') {
+                            // For gallery photos without GPS, try to get current location
+                            getCurrentLocation()
+                                .then((location) => {
+                                    // For gallery photos, we'll let the backend handle GPS addition
+                                    // Just pass the original file and location data
+                                    resolve({ hasGPS: false, file: file, location: location });
+                                })
+                                .catch((error) => {
+                                    reject(new Error('Gallery photo has no GPS data and current location is unavailable. Please take a new photo with camera or enable location services.'));
+                                });
+                        } else {
+                            // Camera photo without GPS
+                            reject(new Error('📸 Camera photo must have GPS data. Please enable location services and take a new photo, or choose from gallery instead.'));
                         }
-                    }
-                    offset += 2 + dataView.getUint16(offset + 2);
-                }
-                
-                if (hasGPS) {
-                    resolve(true);
-                } else {
-                    reject(new Error('Photo must contain GPS location data. Please enable location services and take a new photo.'));
-                }
+                    });
+                };
+                img.src = e.target.result;
             };
             reader.onerror = () => reject(new Error('Failed to read file'));
-            reader.readAsArrayBuffer(file);
+            reader.readAsDataURL(file);
         });
     };
 
@@ -99,15 +127,31 @@ const WasteBounty = ({ currentUser, updatePoints }) => {
         if (!file) return;
 
         try {
-            await validateGeotag(file);
-            setReportPhoto(file);
-            setReportPreview(URL.createObjectURL(file));
+            const result = await validateGeotag(file, reportPhotoSource);
+            setReportPhoto(result.file);
+            setReportPreview(URL.createObjectURL(result.file));
             setError(null);
+            
+            if (!result.hasGPS) {
+                setReportLocation(result.location);
+                setSuccess('✅ Gallery photo selected! Current location has been added as GPS data.');
+            } else {
+                setReportLocation(null);
+            }
         } catch (err) {
             setError(err.message);
             setReportPhoto(null);
             setReportPreview(null);
+            setReportLocation(null);
         }
+    };
+
+    const handleReportPhotoSourceChange = (source) => {
+        setReportPhotoSource(source);
+        setReportPhoto(null);
+        setReportPreview(null);
+        setReportLocation(null);
+        setError(null);
     };
 
     const handleBeforePhotoChange = async (event) => {
@@ -115,10 +159,14 @@ const WasteBounty = ({ currentUser, updatePoints }) => {
         if (!file) return;
 
         try {
-            await validateGeotag(file);
-            setBeforePhoto(file);
-            setBeforePreview(URL.createObjectURL(file));
+            const result = await validateGeotag(file, beforePhotoSource);
+            setBeforePhoto(result.file);
+            setBeforePreview(URL.createObjectURL(result.file));
             setError(null);
+            
+            if (!result.hasGPS) {
+                setSuccess('✅ Gallery photo selected! Current location has been added as GPS data.');
+            }
         } catch (err) {
             setError(err.message);
             setBeforePhoto(null);
@@ -126,20 +174,38 @@ const WasteBounty = ({ currentUser, updatePoints }) => {
         }
     };
 
+    const handleBeforePhotoSourceChange = (source) => {
+        setBeforePhotoSource(source);
+        setBeforePhoto(null);
+        setBeforePreview(null);
+        setError(null);
+    };
+
     const handleAfterPhotoChange = async (event) => {
         const file = event.target.files[0];
         if (!file) return;
 
         try {
-            await validateGeotag(file);
-            setAfterPhoto(file);
-            setAfterPreview(URL.createObjectURL(file));
+            const result = await validateGeotag(file, afterPhotoSource);
+            setAfterPhoto(result.file);
+            setAfterPreview(URL.createObjectURL(result.file));
             setError(null);
+            
+            if (!result.hasGPS) {
+                setSuccess('✅ Gallery photo selected! Current location has been added as GPS data.');
+            }
         } catch (err) {
             setError(err.message);
             setAfterPhoto(null);
             setAfterPreview(null);
         }
+    };
+
+    const handleAfterPhotoSourceChange = (source) => {
+        setAfterPhotoSource(source);
+        setAfterPhoto(null);
+        setAfterPreview(null);
+        setError(null);
     };
 
     const submitBountyReport = async () => {
@@ -150,11 +216,33 @@ const WasteBounty = ({ currentUser, updatePoints }) => {
 
         setLoading(true);
         setError(null);
+        setSuccess(null);
 
         try {
             const token = localStorage.getItem('authToken');
+            if (!token) {
+                setError('Please login first');
+                setLoading(false);
+                return;
+            }
+
             const formData = new FormData();
             formData.append('bounty_report_photo', reportPhoto);
+            
+            // Add location data for gallery photos
+            if (reportLocation) {
+                formData.append('latitude', reportLocation.latitude.toString());
+                formData.append('longitude', reportLocation.longitude.toString());
+                if (reportLocation.city) {
+                    formData.append('city', reportLocation.city);
+                }
+                if (reportLocation.state) {
+                    formData.append('state', reportLocation.state);
+                }
+                console.log('Adding location data for gallery photo:', reportLocation);
+            }
+
+            console.log('Submitting bounty with photo:', reportPhoto.name, 'Size:', reportPhoto.size);
 
             const res = await fetch('http://localhost:5000/api/create_bounty', {
                 method: 'POST',
@@ -162,7 +250,10 @@ const WasteBounty = ({ currentUser, updatePoints }) => {
                 body: formData
             });
 
+            console.log('Response status:', res.status);
             const data = await res.json();
+            console.log('Response data:', data);
+
             if (!res.ok) {
                 setError(data?.error || 'Failed to create bounty');
                 return;
@@ -171,7 +262,10 @@ const WasteBounty = ({ currentUser, updatePoints }) => {
             setSuccess('Bounty created successfully! Other users in your area can now claim it.');
             setReportPhoto(null);
             setReportPreview(null);
+            setReportLocation(null);
+            setReportPhotoSource('camera'); // Reset to camera
         } catch (e) {
+            console.error('Bounty creation error:', e);
             setError('Network error. Please try again.');
         } finally {
             setLoading(false);
@@ -299,26 +393,98 @@ const WasteBounty = ({ currentUser, updatePoints }) => {
                     <div className="bg-white/5 border border-white/10 rounded-xl p-6">
                         <h3 className="text-lg font-semibold text-gray-100 mb-4">Report a Public Waste Spot</h3>
                         <p className="text-gray-400 text-sm mb-4">
-                            Take a photo of waste in a public area. The photo must contain GPS location data.
+                            Take a photo of any waste in public areas - streets, parks, rivers, canals, markets, or any polluted location. The photo must contain GPS location data.
                         </p>
+                        <div className="bg-blue-500/10 border border-blue-500/20 rounded-lg p-3 mb-4">
+                            <p className="text-blue-300 text-sm">
+                                <strong>Supported locations:</strong> Rivers, canals, lakes, parks, streets, markets, construction sites, industrial areas, and any public space with visible waste or pollution.
+                            </p>
+                        </div>
+                        
+                        <div className="bg-green-500/10 border border-green-500/20 rounded-lg p-3 mb-4">
+                            <p className="text-green-300 text-sm">
+                                <strong>💡 Pro Tip:</strong> Use <strong>Camera</strong> for new photos with GPS, or <strong>Gallery</strong> for existing photos (GPS will be added automatically).
+                            </p>
+                        </div>
+                        
+                        {/* Manual Location Input for Better City Detection */}
+                        <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-lg p-3 mb-4">
+                            <p className="text-yellow-300 text-sm mb-2">
+                                <strong>📍 Location:</strong> If city is not detected automatically, please specify:
+                            </p>
+                            <div className="flex space-x-2">
+                                <input
+                                    type="text"
+                                    placeholder="City (e.g., Baramati, Pune, Mumbai)"
+                                    value={reportLocation?.city || ''}
+                                    onChange={(e) => {
+                                        if (reportLocation) {
+                                            setReportLocation({...reportLocation, city: e.target.value});
+                                        }
+                                    }}
+                                    className="flex-1 px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white placeholder-gray-400 text-sm"
+                                />
+                                <input
+                                    type="text"
+                                    placeholder="State (e.g., Maharashtra)"
+                                    value={reportLocation?.state || ''}
+                                    onChange={(e) => {
+                                        if (reportLocation) {
+                                            setReportLocation({...reportLocation, state: e.target.value});
+                                        }
+                                    }}
+                                    className="flex-1 px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white placeholder-gray-400 text-sm"
+                                />
+                            </div>
+                        </div>
                         
                         <div className="space-y-4">
+                            {/* Photo Source Selection */}
+                            <div className="flex space-x-2 mb-4">
+                                <button
+                                    onClick={() => handleReportPhotoSourceChange('camera')}
+                                    className={`flex-1 py-2 px-4 rounded-lg text-sm font-medium transition-colors ${
+                                        reportPhotoSource === 'camera'
+                                            ? 'bg-eco-green text-white'
+                                            : 'bg-white/10 text-gray-300 hover:bg-white/20'
+                                    }`}
+                                >
+                                    📸 Camera
+                                </button>
+                                <button
+                                    onClick={() => handleReportPhotoSourceChange('gallery')}
+                                    className={`flex-1 py-2 px-4 rounded-lg text-sm font-medium transition-colors ${
+                                        reportPhotoSource === 'gallery'
+                                            ? 'bg-eco-green text-white'
+                                            : 'bg-white/10 text-gray-300 hover:bg-white/20'
+                                    }`}
+                                >
+                                    🖼️ Gallery
+                                </button>
+                            </div>
+
                             <div className="border-2 border-dashed border-white/20 bg-white/5 rounded-lg p-8 text-center">
                                 <input
                                     type="file"
                                     accept="image/*"
-                                    capture="environment"
+                                    capture={reportPhotoSource === 'camera' ? 'environment' : undefined}
                                     onChange={handleReportPhotoChange}
                                     className="hidden"
                                     id="report-photo-upload"
                                 />
                                 <label htmlFor="report-photo-upload" className="cursor-pointer">
-                                    <div className="text-4xl mb-2">📸</div>
-                                    <p className="text-gray-300 font-medium">Take Photo with Camera</p>
-                                    <p className="text-sm text-gray-400 mt-1">GPS location required</p>
+                                    <div className="text-4xl mb-2">
+                                        {reportPhotoSource === 'camera' ? '📸' : '🖼️'}
+                                    </div>
+                                    <p className="text-gray-300 font-medium">
+                                        {reportPhotoSource === 'camera' ? 'Take Photo with Camera' : 'Choose from Gallery'}
+                                    </p>
+                                    <p className="text-sm text-gray-400 mt-1">
+                                        {reportPhotoSource === 'camera' ? 'GPS location required' : 'GPS will be added automatically if missing'}
+                                    </p>
                                     {reportPhoto && (
                                         <p className="text-sm text-eco-green mt-2 font-semibold">
-                                            Photo captured: {reportPhoto.name}
+                                            Photo selected: {reportPhoto.name}
                                         </p>
                                     )}
                                 </label>
@@ -439,22 +605,53 @@ const WasteBounty = ({ currentUser, updatePoints }) => {
                                     <span className="text-2xl">📷</span>
                                     Before Cleanup Photo
                                 </h4>
+                                
+                                {/* Photo Source Selection */}
+                                <div className="flex space-x-2">
+                                    <button
+                                        onClick={() => handleBeforePhotoSourceChange('camera')}
+                                        className={`flex-1 py-2 px-3 rounded-lg text-sm font-medium transition-colors ${
+                                            beforePhotoSource === 'camera'
+                                                ? 'bg-eco-accent text-eco-dark'
+                                                : 'bg-white/10 text-gray-300 hover:bg-white/20'
+                                        }`}
+                                    >
+                                        📸 Camera
+                                    </button>
+                                    <button
+                                        onClick={() => handleBeforePhotoSourceChange('gallery')}
+                                        className={`flex-1 py-2 px-3 rounded-lg text-sm font-medium transition-colors ${
+                                            beforePhotoSource === 'gallery'
+                                                ? 'bg-eco-accent text-eco-dark'
+                                                : 'bg-white/10 text-gray-300 hover:bg-white/20'
+                                        }`}
+                                    >
+                                        🖼️ Gallery
+                                    </button>
+                                </div>
+
                                 <div className="border-2 border-dashed border-white/20 bg-white/5 rounded-lg p-6 text-center">
                                     <input
                                         type="file"
                                         accept="image/*"
-                                        capture="environment"
+                                        capture={beforePhotoSource === 'camera' ? 'environment' : undefined}
                                         onChange={handleBeforePhotoChange}
                                         className="hidden"
                                         id="before-photo-upload"
                                     />
                                     <label htmlFor="before-photo-upload" className="cursor-pointer">
-                                        <div className="text-3xl mb-2">📸</div>
-                                        <p className="text-gray-300 font-medium">Take Before Photo</p>
-                                        <p className="text-sm text-gray-400 mt-1">Show the waste before cleaning</p>
+                                        <div className="text-3xl mb-2">
+                                            {beforePhotoSource === 'camera' ? '📸' : '🖼️'}
+                                        </div>
+                                        <p className="text-gray-300 font-medium">
+                                            {beforePhotoSource === 'camera' ? 'Take Before Photo' : 'Choose Before Photo'}
+                                        </p>
+                                        <p className="text-sm text-gray-400 mt-1">
+                                            {beforePhotoSource === 'camera' ? 'Show the waste before cleaning' : 'GPS will be added automatically if missing'}
+                                        </p>
                                         {beforePhoto && (
                                             <p className="text-sm text-eco-green mt-2 font-semibold">
-                                                Photo captured: {beforePhoto.name}
+                                                Photo selected: {beforePhoto.name}
                                             </p>
                                         )}
                                     </label>
@@ -474,22 +671,53 @@ const WasteBounty = ({ currentUser, updatePoints }) => {
                                     <span className="text-2xl">✅</span>
                                     After Cleanup Photo
                                 </h4>
+                                
+                                {/* Photo Source Selection */}
+                                <div className="flex space-x-2">
+                                    <button
+                                        onClick={() => handleAfterPhotoSourceChange('camera')}
+                                        className={`flex-1 py-2 px-3 rounded-lg text-sm font-medium transition-colors ${
+                                            afterPhotoSource === 'camera'
+                                                ? 'bg-eco-accent text-eco-dark'
+                                                : 'bg-white/10 text-gray-300 hover:bg-white/20'
+                                        }`}
+                                    >
+                                        📸 Camera
+                                    </button>
+                                    <button
+                                        onClick={() => handleAfterPhotoSourceChange('gallery')}
+                                        className={`flex-1 py-2 px-3 rounded-lg text-sm font-medium transition-colors ${
+                                            afterPhotoSource === 'gallery'
+                                                ? 'bg-eco-accent text-eco-dark'
+                                                : 'bg-white/10 text-gray-300 hover:bg-white/20'
+                                        }`}
+                                    >
+                                        🖼️ Gallery
+                                    </button>
+                                </div>
+
                                 <div className="border-2 border-dashed border-white/20 bg-white/5 rounded-lg p-6 text-center">
                                     <input
                                         type="file"
                                         accept="image/*"
-                                        capture="environment"
+                                        capture={afterPhotoSource === 'camera' ? 'environment' : undefined}
                                         onChange={handleAfterPhotoChange}
                                         className="hidden"
                                         id="after-photo-upload"
                                     />
                                     <label htmlFor="after-photo-upload" className="cursor-pointer">
-                                        <div className="text-3xl mb-2">📸</div>
-                                        <p className="text-gray-300 font-medium">Take After Photo</p>
-                                        <p className="text-sm text-gray-400 mt-1">Show the area after cleaning</p>
+                                        <div className="text-3xl mb-2">
+                                            {afterPhotoSource === 'camera' ? '📸' : '🖼️'}
+                                        </div>
+                                        <p className="text-gray-300 font-medium">
+                                            {afterPhotoSource === 'camera' ? 'Take After Photo' : 'Choose After Photo'}
+                                        </p>
+                                        <p className="text-sm text-gray-400 mt-1">
+                                            {afterPhotoSource === 'camera' ? 'Show the area after cleaning' : 'GPS will be added automatically if missing'}
+                                        </p>
                                         {afterPhoto && (
                                             <p className="text-sm text-eco-green mt-2 font-semibold">
-                                                Photo captured: {afterPhoto.name}
+                                                Photo selected: {afterPhoto.name}
                                             </p>
                                         )}
                                     </label>
