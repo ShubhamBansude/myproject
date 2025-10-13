@@ -66,12 +66,85 @@ const RewardsShop = ({ onRedeem }) => {
   );
 };
 
-const ProfileView = ({ user }) => {
+const ProfileView = ({ user, setCurrentUser }) => {
+  const [openChange, setOpenChange] = useState(false);
+  const [email, setEmail] = useState(user.email || '');
+  const [newUsername, setNewUsername] = useState('');
+  const [otp, setOtp] = useState('');
+  const [step, setStep] = useState('request'); // request | confirm
+  const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
+
+  const requestChange = async (e) => {
+    e.preventDefault(); setError(''); setMessage('');
+    if (!newUsername.trim()) { setError('Enter a new username.'); return; }
+    try {
+      const res = await fetch('http://localhost:5000/api/request_username_change', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email.trim(), new_username: newUsername.trim() })
+      });
+      const data = await res.json();
+      if (!res.ok) { setError(data?.error || 'Failed to send OTP.'); return; }
+      setMessage('OTP sent to your email. Enter it below to confirm.');
+      setStep('confirm');
+    } catch { setError('Network error. Please try again.'); }
+  };
+
+  const confirmChange = async (e) => {
+    e.preventDefault(); setError(''); setMessage('');
+    if (!otp.trim()) { setError('Enter the OTP received by email.'); return; }
+    try {
+      const res = await fetch('http://localhost:5000/api/confirm_username_change', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email.trim(), otp: otp.trim() })
+      });
+      const data = await res.json();
+      if (!res.ok) { setError(data?.error || 'Failed to update username.'); return; }
+      setMessage('Username updated successfully.');
+      // Update auth token and in-memory user
+      localStorage.setItem('authToken', data.token);
+      setCurrentUser((prev) => ({ ...prev, ...data.user }));
+      setOpenChange(false); setStep('request'); setOtp(''); setNewUsername('');
+    } catch { setError('Network error. Please try again.'); }
+  };
+
   return (
     <div className="grid gap-4 md:grid-cols-2">
       <div className="rounded-xl bg-white/5 border border-white/10 p-4">
-        <div className="text-gray-400 text-sm">Username</div>
-        <div className="text-gray-100 text-xl font-semibold">{user.username}</div>
+        <div className="flex items-center justify-between">
+          <div>
+            <div className="text-gray-400 text-sm">Username</div>
+            <div className="text-gray-100 text-xl font-semibold">{user.username}</div>
+          </div>
+          <button onClick={() => { setOpenChange((o)=>!o); setError(''); setMessage(''); }} className="px-3 py-1 text-xs rounded-lg bg-white/5 border border-white/10 text-gray-200 hover:bg-white/10">Change</button>
+        </div>
+        {openChange && (
+          <div className="mt-3 p-3 rounded-lg bg-white/5 border border-white/10">
+            <form onSubmit={step==='request'?requestChange:confirmChange} className="space-y-3">
+              <div>
+                <label className="block text-xs text-gray-300 mb-1">Email</label>
+                <input type="email" value={email} onChange={(e)=>setEmail(e.target.value)} className="w-full px-3 py-2 rounded bg-black/40 border border-white/10 text-gray-100" />
+              </div>
+              {step==='request' ? (
+                <div>
+                  <label className="block text-xs text-gray-300 mb-1">New Username</label>
+                  <input type="text" value={newUsername} onChange={(e)=>setNewUsername(e.target.value)} className="w-full px-3 py-2 rounded bg-black/40 border border-white/10 text-gray-100" />
+                </div>
+              ) : (
+                <div>
+                  <label className="block text-xs text-gray-300 mb-1">OTP</label>
+                  <input type="text" value={otp} onChange={(e)=>setOtp(e.target.value)} placeholder="6-digit code" className="w-full px-3 py-2 rounded bg-black/40 border border-white/10 text-gray-100" />
+                </div>
+              )}
+              {error && <div className="text-red-300 text-xs bg-red-500/10 border border-red-500/20 rounded p-2">{error}</div>}
+              {message && <div className="text-green-300 text-xs bg-emerald-500/10 border border-emerald-500/20 rounded p-2">{message}</div>}
+              <div className="flex items-center gap-2">
+                <button type="submit" className="px-3 py-2 text-xs rounded-lg bg-eco-green text-eco-dark font-semibold">{step==='request'?'Send OTP':'Confirm'}</button>
+                <button type="button" onClick={()=>{ setOpenChange(false); setStep('request'); setOtp(''); setNewUsername(''); }} className="px-3 py-2 text-xs rounded-lg bg-white/5 border border-white/10 text-gray-200">Cancel</button>
+              </div>
+            </form>
+          </div>
+        )}
       </div>
       <div className="rounded-xl bg-white/5 border border-white/10 p-4">
         <div className="text-gray-400 text-sm">Total Points</div>
@@ -231,7 +304,7 @@ const Dashboard = ({ currentUser, onLogout, setCurrentUser }) => {
   } else if (activeTab === 'rewards') {
     main = <RewardsShop onRedeem={updatePoints} />;
   } else {
-    main = <ProfileView user={currentUser} />;
+    main = <ProfileView user={currentUser} setCurrentUser={setCurrentUser} />;
   }
 
   const progressA = 75;

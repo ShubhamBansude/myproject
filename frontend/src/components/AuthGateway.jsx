@@ -3,7 +3,7 @@
 import React, { useMemo, useState } from 'react';
 import { Country, State, City } from 'country-state-city';
 
-const Login = ({ onLoginSuccess }) => {
+const Login = ({ onLoginSuccess, onForgot }) => {
     const [username, setUsername] = useState('');
     const [password, setPassword] = useState('');
     const [showPassword, setShowPassword] = useState(false);
@@ -58,6 +58,9 @@ const Login = ({ onLoginSuccess }) => {
             <button type="submit" className="w-full py-3 bg-eco-green text-white font-semibold rounded-xl hover:brightness-110 transition duration-300 shadow-[0_8px_30px_rgba(16,185,129,0.25)]">
                 Log In
             </button>
+            <div className="text-right">
+                <button type="button" onClick={onForgot} className="text-xs text-gray-300 hover:text-gray-100 underline">Forgot password?</button>
+            </div>
         </form>
     );
 };
@@ -109,6 +112,97 @@ const AutoSuggestInput = ({ label, placeholder, value, onChange, onSelect, sugge
 const DISTRICT_SUGGESTIONS = [
     'Pune', 'Mumbai Suburban', 'Bengaluru Urban', 'Delhi', 'Chennai', 'Hyderabad', 'Kolkata', 'Ahmedabad', 'Jaipur', 'Thane', 'Nagpur'
 ];
+
+const ForgotPassword = ({ onBackToLogin }) => {
+    const [step, setStep] = useState('request');
+    const [email, setEmail] = useState('');
+    const [otp, setOtp] = useState('');
+    const [newPassword, setNewPassword] = useState('');
+    const [showPassword, setShowPassword] = useState(false);
+    const [message, setMessage] = useState('');
+    const [error, setError] = useState('');
+
+    const requestOtp = async (e) => {
+        e.preventDefault();
+        setError(''); setMessage('');
+        const emailVal = email.trim();
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailVal)) {
+            setError('Please enter a valid email address.');
+            return;
+        }
+        try {
+            const res = await fetch('http://localhost:5000/api/request_password_reset', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ email: emailVal })
+            });
+            const data = await res.json();
+            if (!res.ok) { setError(data?.error || 'Failed to send OTP.'); return; }
+            setMessage('We sent an OTP to your email. Enter it below to reset your password.');
+            setStep('reset');
+        } catch {
+            setError('Network error. Please try again.');
+        }
+    };
+
+    const submitReset = async (e) => {
+        e.preventDefault();
+        setError(''); setMessage('');
+        if (!otp.trim() || !newPassword.trim()) { setError('Enter OTP and new password.'); return; }
+        try {
+            const res = await fetch('http://localhost:5000/api/reset_password', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ email: email.trim(), otp: otp.trim(), new_password: newPassword.trim() })
+            });
+            const data = await res.json();
+            if (!res.ok) { setError(data?.error || 'Password reset failed.'); return; }
+            setMessage('Password reset successful. You can now log in.');
+            setTimeout(onBackToLogin, 800);
+        } catch {
+            setError('Network error. Please try again.');
+        }
+    };
+
+    return (
+        <div className="space-y-4">
+            {step === 'request' ? (
+                <form onSubmit={requestOtp} className="space-y-4">
+                    <div>
+                        <label className="block text-sm text-gray-300 mb-1">Email</label>
+                        <input type="email" placeholder="you@example.com" value={email} onChange={(e)=>setEmail(e.target.value)}
+                               className="w-full px-4 py-3 rounded-xl bg-white/5 border border-white/10 text-gray-100 placeholder:text-gray-400 focus:outline-none focus:border-eco-green focus:ring-2 focus:ring-eco-green/30 transition" />
+                    </div>
+                    {error && <div className="text-red-400 text-sm bg-red-500/10 border border-red-500/30 rounded-lg p-2">{error}</div>}
+                    {message && <div className="text-green-300 text-sm bg-emerald-500/10 border border-emerald-500/30 rounded-lg p-2">{message}</div>}
+                    <button type="submit" className="w-full py-3 bg-eco-green text-white font-semibold rounded-xl hover:brightness-110 transition">Send OTP</button>
+                    <button type="button" onClick={onBackToLogin} className="w-full py-2 text-xs text-gray-300 hover:text-gray-100 underline">Back to Login</button>
+                </form>
+            ) : (
+                <form onSubmit={submitReset} className="space-y-4">
+                    <div>
+                        <label className="block text-sm text-gray-300 mb-1">Email</label>
+                        <input type="email" value={email} disabled
+                               className="w-full px-4 py-3 rounded-xl bg-white/5 border border-white/10 text-gray-400" />
+                    </div>
+                    <div>
+                        <label className="block text-sm text-gray-300 mb-1">OTP</label>
+                        <input type="text" placeholder="6-digit code" value={otp} onChange={(e)=>setOtp(e.target.value)}
+                               className="w-full px-4 py-3 rounded-xl bg-white/5 border border-white/10 text-gray-100 placeholder:text-gray-400 focus:outline-none focus:border-eco-accent focus:ring-2 focus:ring-eco-accent/30 transition" />
+                    </div>
+                    <div className="relative">
+                        <label className="block text-sm text-gray-300 mb-1">New Password</label>
+                        <input type={showPassword ? 'text' : 'password'} placeholder="Create a new password" value={newPassword} onChange={(e)=>setNewPassword(e.target.value)}
+                               className="w-full px-4 py-3 pr-12 rounded-xl bg-white/5 border border-white/10 text-gray-100 placeholder:text-gray-400 focus:outline-none focus:border-eco-green focus:ring-2 focus:ring-eco-green/30 transition" />
+                        <button type="button" onClick={()=>setShowPassword(v=>!v)} className="absolute bottom-3 right-3 text-gray-400 hover:text-gray-200">{showPassword ? '🙈' : '👁️'}</button>
+                    </div>
+                    {error && <div className="text-red-400 text-sm bg-red-500/10 border border-red-500/30 rounded-lg p-2">{error}</div>}
+                    {message && <div className="text-green-300 text-sm bg-emerald-500/10 border border-emerald-500/30 rounded-lg p-2">{message}</div>}
+                    <button type="submit" className="w-full py-3 bg-eco-accent text-eco-dark font-semibold rounded-xl hover:brightness-110 transition">Reset Password</button>
+                    <button type="button" onClick={onBackToLogin} className="w-full py-2 text-xs text-gray-300 hover:text-gray-100 underline">Back to Login</button>
+                </form>
+            )}
+        </div>
+    );
+};
 
 const Signup = ({ onSignupSuccess }) => {
     const [username, setUsername] = useState('');
@@ -271,14 +365,21 @@ const Signup = ({ onSignupSuccess }) => {
                 inputProps={{ disabled: !selectedCountry }}
             />
             <AutoSuggestInput 
-                label="City" 
-                placeholder="City name" 
+                label="District" 
+                placeholder="District name" 
+                value={district} 
+                onChange={setDistrict} 
+                suggestions={DISTRICT_SUGGESTIONS}
+                inputProps={{ disabled: !selectedStateObj }}
+            />
+            <AutoSuggestInput 
+                label="City/Village" 
+                placeholder="City or Village" 
                 value={city} 
                 onChange={setCity} 
                 suggestions={cityNames} 
                 inputProps={{ disabled: !selectedStateObj }}
             />
-            <AutoSuggestInput label="District" placeholder="District name" value={district} onChange={setDistrict} suggestions={DISTRICT_SUGGESTIONS} />
             {error && <div className="text-red-400 text-sm bg-red-500/10 border border-red-500/30 rounded-lg p-2">{error}</div>}
             <button type="submit" className="w-full py-3 bg-eco-accent text-eco-dark font-semibold rounded-xl hover:brightness-110 transition duration-300 shadow-[0_8px_30px_rgba(245,158,11,0.25)]">
                 Create Account
@@ -346,10 +447,15 @@ const AuthGateway = ({ onAuthSuccess }) => {
                     )}
 
                     <div key={authMode} className="opacity-0 animate-fade-in-up">
-                        {authMode === 'login' 
-                            ? <Login onLoginSuccess={handleLoginSuccess} /> 
-                            : <Signup onSignupSuccess={handleSignupSuccess} />
-                        }
+                        {authMode === 'login' && (
+                            <Login onLoginSuccess={handleLoginSuccess} onForgot={() => setAuthMode('forgot')} />
+                        )}
+                        {authMode === 'signup' && (
+                            <Signup onSignupSuccess={handleSignupSuccess} />
+                        )}
+                        {authMode === 'forgot' && (
+                            <ForgotPassword onBackToLogin={() => setAuthMode('login')} />
+                        )}
                     </div>
                 </div>
 

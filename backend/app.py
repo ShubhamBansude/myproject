@@ -7,6 +7,8 @@ import io
 import json
 import hashlib
 import time
+import random
+from datetime import datetime, timedelta
 
 from flask import Flask, request, jsonify, Response, send_from_directory
 from flask_cors import CORS
@@ -885,6 +887,25 @@ def init_db() -> None:
 		)
 		conn.commit()
 
+		# Email OTP table for password reset and username change
+		conn.execute(
+			(
+				'CREATE TABLE IF NOT EXISTS email_otps ('
+				'  id INTEGER PRIMARY KEY AUTOINCREMENT,'
+				'  email TEXT NOT NULL,'
+				'  purpose TEXT NOT NULL,'
+				'  code_hash BLOB NOT NULL,'
+				'  metadata TEXT,'
+				'  attempts INTEGER NOT NULL DEFAULT 0,'
+				'  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,'
+				'  expires_at DATETIME NOT NULL,'
+				'  consumed_at DATETIME'
+				')'
+			)
+		)
+		conn.execute('CREATE INDEX IF NOT EXISTS idx_email_otps_email_purpose ON email_otps(email, purpose)')
+		conn.commit()
+
 
 app = Flask(__name__)
 
@@ -947,6 +968,87 @@ def notify_user(recipient_username: str, payload: Dict[str, Any]) -> None:
                 pass
     except Exception as e:
         print(f"notify_user error: {e}")
+
+
+# ======== Email OTP Helpers ========
+def _now() -> datetime:
+    return datetime.utcnow()
+
+
+def _fmt_dt(dt: datetime) -> str:
+    return dt.strftime('%Y-%m-%d %H:%M:%S')
+
+
+def generate_otp_code(length: int = 6) -> str:
+    digits = '0123456789'
+    return ''.join(random.choice(digits) for _ in range(length))
+
+
+def store_email_otp(email: str, purpose: str, code_plain: str, metadata: Optional[Dict[str, Any]] = None, ttl_minutes: int = 10) -> None:
+    code_hash = bcrypt.hashpw(code_plain.encode('utf-8'), bcrypt.gensalt())
+    expires_at = _fmt_dt(_now() + timedelta(minutes=ttl_minutes))
+    meta_text = json.dumps(metadata) if metadata else None
+    with get_db_connection() as conn:
+        # Invalidate older active OTPs for this email & purpose
+        try:
+            conn.execute(
+                'UPDATE email_otps SET consumed_at = CURRENT_TIMESTAMP WHERE email = ? AND purpose = ? AND consumed_at IS NULL AND expires_at > CURRENT_TIMESTAMP',
+                (email, purpose)
+            )
+        except Exception:
+            pass
+        conn.execute(
+            'INSERT INTO email_otps (email, purpose, code_hash, metadata, expires_at) VALUES (?, ?, ?, ?, ?)',
+            (email, purpose, code_hash, meta_text, expires_at)
+        )
+        conn.commit()
+
+
+def validate_and_consume_email_otp(email: str, purpose: str, code_plain: str) -> Optional[Dict[str, Any]]:
+    with get_db_connection() as conn:
+        row = conn.execute(
+            'SELECT id, code_hash, metadata, attempts, expires_at, consumed_at FROM email_otps WHERE email = ? AND purpose = ? ORDER BY id DESC LIMIT 1',
+            (email, purpose)
+        ).fetchone()
+        if row is None:
+            return None
+        otp_id, code_hash, metadata_text, attempts, expires_at, consumed_at = row
+        if consumed_at is not None:
+            return None
+        # Expiry check
+        try:
+            if datetime.strptime(str(expires_at), '%Y-%m-%d %H:%M:%S') < _now():
+                return None
+        except Exception:
+            return None
+        # Attempts limit
+        if int(attempts or 0) >= 5:
+            return None
+        # Verify
+        ok = False
+        try:
+            ok = bcrypt.checkpw(code_plain.encode('utf-8'), code_hash)
+        except Exception:
+            ok = False
+        if not ok:
+            try:
+                conn.execute('UPDATE email_otps SET attempts = attempts + 1 WHERE id = ?', (otp_id,))
+                conn.commit()
+            except Exception:
+                pass
+            return None
+        # Consume
+        conn.execute('UPDATE email_otps SET consumed_at = CURRENT_TIMESTAMP WHERE id = ?', (otp_id,))
+        conn.commit()
+        try:
+            return json.loads(metadata_text) if metadata_text else {}
+        except Exception:
+            return {}
+
+
+def send_email_otp_dev(email: str, purpose: str, otp_code: str) -> None:
+    # In dev environment, log the OTP to console
+    print(f"[DEV] OTP for {purpose} to {email}: {otp_code}")
 
 
 @app.route('/api/health', methods=['GET'])
@@ -1062,6 +1164,106 @@ def login() -> Tuple[Any, int]:
 	token = f"token_{row[0]}"
 
 	return jsonify({"user": user, "token": token}), 200
+
+
+# ======== Username change (email OTP) ========
+@app.route('/api/request_username_change', methods=['POST'])
+def request_username_change() -> Tuple[Any, int]:
+    data: Dict[str, Any] = request.get_json(silent=True) or {}
+    email: str = (data.get('email') or '').strip()
+    new_username: str = (data.get('new_username') or '').strip()
+    if not email or not new_username:
+        return jsonify({"error": "email and new_username are required"}), 400
+    with get_db_connection() as conn:
+        row = conn.execute('SELECT username FROM users WHERE TRIM(LOWER(email)) = TRIM(LOWER(?))', (email,)).fetchone()
+        if row is None:
+            # Do not reveal existence
+            return jsonify({"message": "If the email exists, an OTP has been sent."}), 200
+        exists = conn.execute('SELECT 1 FROM users WHERE TRIM(LOWER(username)) = TRIM(LOWER(?))', (new_username,)).fetchone()
+        if exists:
+            return jsonify({"error": "username already exists"}), 409
+    otp = generate_otp_code(6)
+    store_email_otp(email=email, purpose='change_username', code_plain=otp, metadata={"new_username": new_username}, ttl_minutes=10)
+    send_email_otp_dev(email, 'change_username', otp)
+    resp = {"message": "OTP sent to email for username change"}
+    if os.environ.get('DEV_MODE_OTP') == '1':
+        resp['dev_otp'] = otp
+    return jsonify(resp), 200
+
+
+@app.route('/api/confirm_username_change', methods=['POST'])
+def confirm_username_change() -> Tuple[Any, int]:
+    data: Dict[str, Any] = request.get_json(silent=True) or {}
+    email: str = (data.get('email') or '').strip()
+    otp: str = (data.get('otp') or '').strip()
+    if not email or not otp:
+        return jsonify({"error": "email and otp are required"}), 400
+    meta = validate_and_consume_email_otp(email=email, purpose='change_username', code_plain=otp)
+    if meta is None:
+        return jsonify({"error": "invalid or expired otp"}), 400
+    new_username = (meta.get('new_username') or '').strip()
+    if not new_username:
+        return jsonify({"error": "invalid request"}), 400
+    with get_db_connection() as conn:
+        row = conn.execute('SELECT username, email, total_points, country, state, city FROM users WHERE TRIM(LOWER(email)) = TRIM(LOWER(?))', (email,)).fetchone()
+        if row is None:
+            return jsonify({"error": "user not found"}), 404
+        exists = conn.execute('SELECT 1 FROM users WHERE TRIM(LOWER(username)) = TRIM(LOWER(?))', (new_username,)).fetchone()
+        if exists:
+            return jsonify({"error": "username already exists"}), 409
+        conn.execute('UPDATE users SET username = ? WHERE TRIM(LOWER(email)) = TRIM(LOWER(?))', (new_username, email))
+        conn.commit()
+        user = {
+            "username": new_username,
+            "email": row[1],
+            "total_points": row[2],
+            "country": row[3],
+            "state": row[4],
+            "city": row[5],
+        }
+    token = f"token_{new_username}"
+    return jsonify({"message": "username updated", "user": user, "token": token}), 200
+
+
+# ======== Password reset (email OTP) ========
+@app.route('/api/request_password_reset', methods=['POST'])
+def request_password_reset() -> Tuple[Any, int]:
+    data: Dict[str, Any] = request.get_json(silent=True) or {}
+    email: str = (data.get('email') or '').strip()
+    if not email:
+        return jsonify({"error": "email is required"}), 400
+    if '@' not in email or '.' not in email.split('@')[-1]:
+        return jsonify({"error": "invalid email address"}), 400
+    with get_db_connection() as conn:
+        row = conn.execute('SELECT 1 FROM users WHERE TRIM(LOWER(email)) = TRIM(LOWER(?))', (email,)).fetchone()
+    if row is not None:
+        otp = generate_otp_code(6)
+        store_email_otp(email=email, purpose='reset_password', code_plain=otp, metadata=None, ttl_minutes=10)
+        send_email_otp_dev(email, 'reset_password', otp)
+    resp = {"message": "If the email exists, an OTP has been sent."}
+    if os.environ.get('DEV_MODE_OTP') == '1' and row is not None:
+        resp['dev_otp'] = otp
+    return jsonify(resp), 200
+
+
+@app.route('/api/reset_password', methods=['POST'])
+def reset_password() -> Tuple[Any, int]:
+    data: Dict[str, Any] = request.get_json(silent=True) or {}
+    email: str = (data.get('email') or '').strip()
+    otp: str = (data.get('otp') or '').strip()
+    new_password: str = (data.get('new_password') or '').strip()
+    if not email or not otp or not new_password:
+        return jsonify({"error": "email, otp, and new_password are required"}), 400
+    if len(new_password) < 6:
+        return jsonify({"error": "password must be at least 6 characters"}), 400
+    meta = validate_and_consume_email_otp(email=email, purpose='reset_password', code_plain=otp)
+    if meta is None:
+        return jsonify({"error": "invalid or expired otp"}), 400
+    password_hash = bcrypt.hashpw(new_password.encode('utf-8'), bcrypt.gensalt())
+    with get_db_connection() as conn:
+        conn.execute('UPDATE users SET password_hash = ? WHERE TRIM(LOWER(email)) = TRIM(LOWER(?))', (password_hash, email))
+        conn.commit()
+    return jsonify({"message": "password reset successful"}), 200
 
 @app.route('/api/me', methods=['GET'])
 def me() -> Tuple[Any, int]:
