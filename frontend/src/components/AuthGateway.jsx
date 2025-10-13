@@ -38,8 +38,8 @@ const Login = ({ onLoginSuccess }) => {
     return (
         <form className="space-y-4" onSubmit={handleSubmit}>
             <div>
-                <label className="block text-sm text-gray-300 mb-1">Username</label>
-                <input type="text" placeholder="e.g. eco_hero"
+                <label className="block text-sm text-gray-300 mb-1">Username or Email</label>
+                <input type="text" placeholder="e.g. eco_hero or user@example.com"
                     value={username}
                     onChange={e => setUsername(e.target.value)}
                     className="w-full px-4 py-3 rounded-xl bg-white/5 border border-white/10 text-gray-100 placeholder:text-gray-400 focus:outline-none focus:border-eco-green focus:ring-2 focus:ring-eco-green/30 transition" />
@@ -112,6 +112,7 @@ const DISTRICT_SUGGESTIONS = [
 
 const Signup = ({ onSignupSuccess }) => {
     const [username, setUsername] = useState('');
+    const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const [confirmPassword, setConfirmPassword] = useState('');
     const [country, setCountry] = useState('');
@@ -154,8 +155,14 @@ const Signup = ({ onSignupSuccess }) => {
         e.preventDefault();
         setError(null);
 
-        if (!username.trim() || !password.trim() || !confirmPassword.trim() || !country.trim() || !region.trim() || !city.trim() || !district.trim()) {
+        if (!username.trim() || !email.trim() || !password.trim() || !confirmPassword.trim() || !country.trim() || !region.trim() || !city.trim() || !district.trim()) {
             setError('Please fill all fields.');
+            return;
+        }
+        // Minimal email validation
+        const emailVal = email.trim();
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailVal)) {
+            setError('Please enter a valid email address.');
             return;
         }
         if (password !== confirmPassword) {
@@ -168,7 +175,8 @@ const Signup = ({ onSignupSuccess }) => {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ 
-                    username: username.trim(), 
+                    username: username.trim(),
+                    email: emailVal,
                     password: password.trim(),
                     country: country.trim(),
                     state: region.trim(),
@@ -195,6 +203,13 @@ const Signup = ({ onSignupSuccess }) => {
                     value={username}
                     onChange={e => setUsername(e.target.value)}
                     className="w-full px-4 py-3 rounded-xl bg-white/5 border border-white/10 text-gray-100 placeholder:text-gray-400 focus:outline-none focus:border-eco-green focus:ring-2 focus:ring-eco-green/30 transition" />
+            </div>
+            <div>
+                <label className="block text-sm text-gray-300 mb-1">Email</label>
+                <input type="email" placeholder="you@example.com"
+                    value={email}
+                    onChange={e => setEmail(e.target.value)}
+                    className="w-full px-4 py-3 rounded-xl bg-white/5 border border-white/10 text-gray-100 placeholder:text-gray-400 focus:outline-none focus:border-eco-accent focus:ring-2 focus:ring-eco-accent/30 transition" />
             </div>
             <div className="relative">
                 <label className="block text-sm text-gray-300 mb-1">Password</label>

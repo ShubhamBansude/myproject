@@ -733,6 +733,7 @@ def init_db() -> None:
 				'CREATE TABLE IF NOT EXISTS users ('
 				'  id INTEGER PRIMARY KEY AUTOINCREMENT,'
 				'  username TEXT UNIQUE NOT NULL,'
+                '  email TEXT UNIQUE NOT NULL,'
 				'  password_hash BLOB NOT NULL,'
 				'  total_points INTEGER NOT NULL DEFAULT 100,'
 				'  last_awarded_signature TEXT,'
@@ -749,6 +750,8 @@ def init_db() -> None:
 		columns = [column[1] for column in cursor.fetchall()]
 		
 		# Backfill legacy schemas missing any of these columns
+		if 'email' not in columns:
+			conn.execute('ALTER TABLE users ADD COLUMN email TEXT')
 		if 'country' not in columns:
 			conn.execute('ALTER TABLE users ADD COLUMN country TEXT DEFAULT "Unknown"')
 		if 'state' not in columns:
@@ -757,6 +760,8 @@ def init_db() -> None:
 			conn.execute('ALTER TABLE users ADD COLUMN city TEXT DEFAULT "Unknown"')
 		if 'district' not in columns:
 			conn.execute('ALTER TABLE users ADD COLUMN district TEXT DEFAULT "Unknown"')
+		# Ensure unique index on email (allows multiple NULLs for legacy rows)
+		conn.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email)')
 		conn.commit()
 		# Coupons table
 		conn.execute(
@@ -914,14 +919,19 @@ def health() -> Tuple[Any, int]:
 def signup() -> Tuple[Any, int]:
 	data: Dict[str, Any] = request.get_json(silent=True) or {}
 	username: str = (data.get('username') or '').strip()
+	email: str = (data.get('email') or '').strip()
 	password: str = (data.get('password') or '').strip()
 	country: str = (data.get('country') or '').strip()
 	state: str = (data.get('state') or '').strip()
 	city: str = (data.get('city') or '').strip()
 	district: str = (data.get('district') or '').strip()
 
-	if not username or not password or not country or not state or not city:
-		return jsonify({"error": "username, password, country, state, and city are required"}), 400
+	if not username or not email or not password or not country or not state or not city:
+		return jsonify({"error": "username, email, password, country, state, and city are required"}), 400
+
+	# Minimal email format check
+	if '@' not in email or '.' not in email.split('@')[-1]:
+		return jsonify({"error": "invalid email address"}), 400
 
 	# Hash password
 	password_bytes = password.encode('utf-8')
@@ -930,26 +940,42 @@ def signup() -> Tuple[Any, int]:
 
 	try:
 		with get_db_connection() as conn:
+			# Enforce uniqueness for username and email
+			existing_u = conn.execute(
+				'SELECT 1 FROM users WHERE TRIM(LOWER(username)) = TRIM(LOWER(?))',
+				(username,)
+			).fetchone()
+			if existing_u:
+				return jsonify({"error": "username already exists"}), 409
+
+			existing_e = conn.execute(
+				'SELECT 1 FROM users WHERE TRIM(LOWER(email)) = TRIM(LOWER(?))',
+				(email,)
+			).fetchone()
+			if existing_e:
+				return jsonify({"error": "email already exists"}), 409
+
 			# Persist district when provided; otherwise DB default of "Unknown" applies
 			if district:
 				conn.execute(
-					'INSERT INTO users (username, password_hash, total_points, country, state, city, district) VALUES (?, ?, ?, ?, ?, ?, ?)',
-					(username, password_hash, 100, country, state, city, district),
+					'INSERT INTO users (username, email, password_hash, total_points, country, state, city, district) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+					(username, email, password_hash, 100, country, state, city, district),
 				)
 			else:
 				conn.execute(
-					'INSERT INTO users (username, password_hash, total_points, country, state, city) VALUES (?, ?, ?, ?, ?, ?)',
-					(username, password_hash, 100, country, state, city),
+					'INSERT INTO users (username, email, password_hash, total_points, country, state, city) VALUES (?, ?, ?, ?, ?, ?, ?)',
+					(username, email, password_hash, 100, country, state, city),
 				)
 			conn.commit()
 	except sqlite3.IntegrityError:
-		return jsonify({"error": "username already exists"}), 409
+		return jsonify({"error": "username or email already exists"}), 409
 	except Exception as e:
 		print(f"Database error during signup: {str(e)}")
 		return jsonify({"error": f"Database error: {str(e)}"}), 500
 
 	user = {
 		"username": username,
+		"email": email,
 		"total_points": 100,
 		"country": country,
 		"state": state,
@@ -964,33 +990,37 @@ def signup() -> Tuple[Any, int]:
 @app.route('/api/login', methods=['POST'])
 def login() -> Tuple[Any, int]:
 	data: Dict[str, Any] = request.get_json(silent=True) or {}
-	username: str = (data.get('username') or '').strip()
+	# Accept username OR email in the 'username' field (identifier)
+	identifier: str = (data.get('username') or '').strip()
 	password: str = (data.get('password') or '').strip()
 
-	if not username or not password:
-		return jsonify({"error": "username and password are required"}), 400
+	if not identifier or not password:
+		return jsonify({"error": "username/email and password are required"}), 400
 
 	with get_db_connection() as conn:
 		row = conn.execute(
-			'SELECT username, password_hash, total_points, country, state, city FROM users WHERE username = ?',
-			(username,),
+			'SELECT username, email, password_hash, total_points, country, state, city FROM users WHERE TRIM(LOWER(username)) = TRIM(LOWER(?)) OR TRIM(LOWER(email)) = TRIM(LOWER(?))',
+			(identifier, identifier),
 		).fetchone()
 
 	if row is None:
 		return jsonify({"error": "invalid credentials"}), 401
 
-	stored_hash: bytes = row[1]
+	# sqlite3.Row supports key-based access
+	stored_hash: bytes = row[2]
 	if not bcrypt.checkpw(password.encode('utf-8'), stored_hash):
 		return jsonify({"error": "invalid credentials"}), 401
 
 	user = {
 		"username": row[0],
-		"total_points": row[2],
-		"country": row[3],
-		"state": row[4],
-		"city": row[5],
+		"email": row[1],
+		"total_points": row[3],
+		"country": row[4],
+		"state": row[5],
+		"city": row[6],
 	}
-	token = f"token_{username}"
+	# Issue token bound to actual username to keep auth consistent
+	token = f"token_{row[0]}"
 
 	return jsonify({"user": user, "token": token}), 200
 
@@ -1004,18 +1034,19 @@ def me() -> Tuple[Any, int]:
 		return jsonify({"error": "unauthorized"}), 401
 	with get_db_connection() as conn:
 		row = conn.execute(
-			'SELECT username, total_points, country, state, city, district FROM users WHERE username = ?',
+			'SELECT username, email, total_points, country, state, city, district FROM users WHERE username = ?',
 			(username,),
 		).fetchone()
 		if row is None:
 			return jsonify({"error": "user not found"}), 404
 		user = {
 			"username": row[0],
-			"total_points": row[1],
-			"country": row[2],
-			"state": row[3],
-			"city": row[4],
-			"district": row[5],
+			"email": row[1],
+			"total_points": row[2],
+			"country": row[3],
+			"state": row[4],
+			"city": row[5],
+			"district": row[6],
 		}
 	return jsonify({"user": user}), 200
 
