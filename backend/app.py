@@ -8,7 +8,7 @@ import json
 import hashlib
 import time
 
-from flask import Flask, request, jsonify, Response
+from flask import Flask, request, jsonify, Response, send_from_directory
 from flask_cors import CORS
 import bcrypt
 import queue
@@ -19,9 +19,7 @@ import cv2
 import numpy as np
 
 # Video processing
-from moviepy.editor import VideoFileClip
 import tempfile
-import os
 
 # EXIF and geolocation processing
 import piexif
@@ -29,7 +27,10 @@ from geopy.geocoders import Nominatim
 import math
 
 # Gemini AI integration
-import google.generativeai as genai
+try:
+    import google.generativeai as genai
+except Exception:
+    genai = None
 from PIL import Image
 
 
@@ -38,8 +39,9 @@ POINTS_PER_DETECTION = 100
 NON_RECYCLABLE_FLAT_POINTS = 50
 
 # Gemini API configuration
-GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', 'AIzaSyCfWu5kqtDCBySuyph7_L5aeODLosKWT7Q')
-genai.configure(api_key=GEMINI_API_KEY)
+GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
+if GEMINI_API_KEY and genai is not None:
+    genai.configure(api_key=GEMINI_API_KEY)
 
 
 def generate_image_hash(image_bytes: bytes) -> str:
@@ -359,7 +361,7 @@ def analyze_video_sequence_with_gemini(frames: List[np.ndarray], max_retries: in
 	Analyze a sequence of 5 video frames using Gemini API for waste disposal verification
 	Includes retry mechanism for improved consistency
 	"""
-	if not GEMINI_API_KEY:
+	if not GEMINI_API_KEY or genai is None:
 		return {
 			"error": "Gemini API key not configured", 
 			"waste_type": "unknown",
@@ -532,7 +534,7 @@ def analyze_with_gemini(image: np.ndarray) -> Dict[str, Any]:
 	Analyze waste items in image using Gemini API as the primary detection system
 	Returns comprehensive waste analysis with classification and disposal recommendations
 	"""
-	if not GEMINI_API_KEY:
+	if not GEMINI_API_KEY or genai is None:
 		return {
 			"error": "Gemini API key not configured", 
 			"items": [], 
@@ -776,6 +778,8 @@ def init_db() -> None:
 				')'
 			)
 		)
+		# Seed default coupons once
+		seed_coupons(conn)
 		# Transactions table
 		conn.execute(
 			(
@@ -883,7 +887,25 @@ def init_db() -> None:
 
 
 app = Flask(__name__)
-CORS(app, resources={r"/api/*": {"origins": "*"}})
+
+# Limit upload size (MB) to mitigate abuse; default 25MB
+try:
+    app.config['MAX_CONTENT_LENGTH'] = int(os.environ.get('MAX_UPLOAD_MB', '25')) * 1024 * 1024
+except Exception:
+    app.config['MAX_CONTENT_LENGTH'] = 25 * 1024 * 1024
+
+# CORS configuration from env (CORS_ORIGINS="*") or comma-separated origins
+_cors_env = (os.environ.get('CORS_ORIGINS', '*') or '*').strip()
+_cors_origins = '*'
+if _cors_env != '*':
+    _cors_origins = [o.strip() for o in _cors_env.split(',') if o.strip()]
+CORS(app, resources={r"/api/*": {"origins": _cors_origins}})
+
+# Serve uploaded files safely from a dedicated directory
+_uploads_dir = os.path.join(os.path.dirname(__file__), 'uploads')
+@app.route('/uploads/<path:filename>')
+def serve_upload(filename: str):
+    return send_from_directory(_uploads_dir, filename, as_attachment=False)
 
 # In-memory subscriber registry for SSE notification streams
 # Maps username -> set of Queue instances
@@ -1536,6 +1558,15 @@ def notifications_stream():
     if not username:
         return jsonify({"error": "unauthorized"}), 401
 
+    # Validate user exists before opening stream
+    try:
+        with get_db_connection() as conn:
+            row = conn.execute('SELECT 1 FROM users WHERE username = ?', (username,)).fetchone()
+            if row is None:
+                return jsonify({"error": "user not found"}), 404
+    except Exception:
+        return jsonify({"error": "unauthorized"}), 401
+
     q: queue.Queue = queue.Queue()
     notification_subscribers[username].add(q)
 
@@ -1568,7 +1599,7 @@ def verify_cleanup_with_gemini(original_image: np.ndarray, before_image: np.ndar
 	"""
 	Verify cleanup using Gemini API with the exact prompt specified
 	"""
-	if not GEMINI_API_KEY:
+	if not GEMINI_API_KEY or genai is None:
 		return {
 			"error": "Gemini API key not configured",
 			"scene_match": False,
@@ -1777,8 +1808,8 @@ def verify_cleanup() -> Tuple[Any, int]:
 	if not os.path.exists(original_image_path):
 		return jsonify({"error": "original bounty image not found"}), 500
 	
-	# Optional: Development/testing mode to bypass Gemini scene check
-	dev_mode = (request.form.get('dev_mode', '').lower() == 'true') or (os.environ.get('DEV_MODE_CLEANUP') == '1')
+	# Optional: Development/testing mode to bypass Gemini scene check (server-controlled only)
+	dev_mode = (os.environ.get('DEV_MODE_CLEANUP') == '1')
 	if dev_mode:
 		# Directly approve if GPS validation passed; persist image URLs and award points
 		with get_db_connection() as conn:
@@ -2179,7 +2210,7 @@ def analyze_detailed() -> Tuple[Any, int]:
 		if "error" in gemini_result:
 			return jsonify({
 				"error": gemini_result["error"],
-				"gemini_available": GEMINI_API_KEY != ""
+				"gemini_available": bool(GEMINI_API_KEY)
 			}), 500
 
 		# Categorize items
@@ -2227,7 +2258,7 @@ def analyze_detailed() -> Tuple[Any, int]:
 			"analysis": gemini_result,
 			"categorized_items": categorized,
 			"potential_points": potential_points,
-			"gemini_available": GEMINI_API_KEY != "",
+			"gemini_available": bool(GEMINI_API_KEY),
 			"disposal_tips": [item.get("disposal_tip", "") for item in gemini_result.get("items", []) if item.get("disposal_tip")],
 			"environmental_impacts": [item.get("environmental_impact", "") for item in gemini_result.get("items", []) if item.get("environmental_impact")],
 			"summary": gemini_result.get("summary", ""),
@@ -2244,7 +2275,7 @@ def analyze_detailed() -> Tuple[Any, int]:
 		if "error" in video_analysis:
 			return jsonify({
 				"error": video_analysis["error"],
-				"gemini_available": GEMINI_API_KEY != ""
+				"gemini_available": bool(GEMINI_API_KEY)
 			}), 500
 
 		# Calculate potential points for video
@@ -2255,7 +2286,7 @@ def analyze_detailed() -> Tuple[Any, int]:
 		response = {
 			"video_analysis": video_analysis,
 			"potential_points": potential_points,
-			"gemini_available": GEMINI_API_KEY != "",
+			"gemini_available": bool(GEMINI_API_KEY),
 			"waste_type": video_analysis.get("waste_type", "unknown"),
 			"disposal_verified": video_analysis.get("disposal_verified", False),
 			"reasoning": video_analysis.get("reasoning", "No reasoning provided"),

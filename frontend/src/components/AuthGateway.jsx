@@ -30,7 +30,7 @@ const Login = ({ onLoginSuccess }) => {
                 return;
             }
             onLoginSuccess(data.user, data.token);
-        } catch (err) {
+        } catch {
             setError('Network error. Please try again.');
         }
     };
@@ -190,7 +190,7 @@ const Signup = ({ onSignupSuccess }) => {
                 return;
             }
             onSignupSuccess();
-        } catch (err) {
+        } catch {
             setError('Network error. Please try again.');
         }
     };
