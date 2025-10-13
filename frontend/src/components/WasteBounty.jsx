@@ -11,7 +11,7 @@ const loadEXIF = async () => {
   return EXIFLibPromise.then(mod => mod.default || mod);
 };
 
-const WasteBounty = ({ updatePoints }) => {
+const WasteBounty = ({ updatePoints, currentUser }) => {
     const [activeTab, setActiveTab] = useState('report'); // 'report', 'bounties', 'cleanup'
     const [bounties, setBounties] = useState([]);
     const [loading, setLoading] = useState(false);
@@ -43,6 +43,12 @@ const WasteBounty = ({ updatePoints }) => {
     const [chatInputByBounty, setChatInputByBounty] = useState({}); // { [bountyId]: string }
     const [chatLoadingByBounty, setChatLoadingByBounty] = useState({}); // { [bountyId]: boolean }
 
+    // Leaderboard states
+    const [topUsers, setTopUsers] = useState([]);
+    const [topClans, setTopClans] = useState([]);
+    const [lbLoading, setLbLoading] = useState(false);
+    const [lbError, setLbError] = useState('');
+
     // Load bounties on component mount
     useEffect(() => {
         if (activeTab === 'bounties') {
@@ -73,6 +79,24 @@ const WasteBounty = ({ updatePoints }) => {
             setLoading(false);
         }
     };
+
+    const loadLeaderboard = async () => {
+        setLbLoading(true); setLbError('');
+        try {
+            const [uRes, cRes] = await Promise.all([
+                fetch('http://localhost:5000/api/leaderboard/users?limit=10'),
+                fetch('http://localhost:5000/api/leaderboard/clans?limit=10'),
+            ]);
+            const uData = await uRes.json();
+            const cData = await cRes.json();
+            if (uRes.ok) setTopUsers(Array.isArray(uData.users) ? uData.users : []); else setLbError(uData?.error || 'Failed to load users leaderboard');
+            if (cRes.ok) setTopClans(Array.isArray(cData.clans) ? cData.clans : []); else setLbError((prev)=> prev || cData?.error || 'Failed to load clans leaderboard');
+        } catch {
+            setLbError('Network error loading leaderboard');
+        } finally { setLbLoading(false); }
+    };
+
+    useEffect(() => { loadLeaderboard(); }, []);
 
     const getCurrentLocation = () => {
         return new Promise((resolve, reject) => {
@@ -446,7 +470,8 @@ const WasteBounty = ({ updatePoints }) => {
     };
 
     return (
-        <div className="space-y-6">
+        <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
+            <div className="space-y-6">
             <div className="flex items-center justify-between">
                 <h2 className="text-2xl font-bold text-gray-100">🗺️ Waste Bounty System</h2>
                 <div className="text-sm text-gray-400">
@@ -942,6 +967,52 @@ const WasteBounty = ({ updatePoints }) => {
                     </div>
                 </div>
             )}
+            </div>
+
+            {/* Right Sidebar: Leaderboard */}
+            <aside className="space-y-4">
+                <div className="rounded-xl bg-white/5 border border-white/10 p-4 h-max">
+                    <div className="flex items-center justify-between mb-2">
+                        <div className="text-gray-100 font-semibold">Leaderboard</div>
+                        <button onClick={loadLeaderboard} disabled={lbLoading} className="text-xs text-gray-300 hover:text-white">
+                            {lbLoading ? 'Loading…' : 'Refresh'}
+                        </button>
+                    </div>
+                    {lbError && (
+                        <div className="mb-2 p-2 text-xs text-red-300 bg-red-500/10 border border-red-500/20 rounded">{lbError}</div>
+                    )}
+                    <div className="space-y-4">
+                        <div>
+                            <div className="text-gray-300 text-sm mb-1">Top Users</div>
+                            <ol className="space-y-1">
+                                {topUsers.slice(0,5).map((u, i) => (
+                                    <li key={u.username || i} className="flex items-center justify-between text-sm">
+                                        <span className="text-gray-200"><span className="text-gray-400 mr-2">#{i+1}</span>@{u.username}</span>
+                                        <span className="text-eco-green">{u.total_points} pts</span>
+                                    </li>
+                                ))}
+                                {topUsers.length === 0 && !lbLoading && (
+                                    <li className="text-xs text-gray-400">No users yet.</li>
+                                )}
+                            </ol>
+                        </div>
+                        <div>
+                            <div className="text-gray-300 text-sm mb-1">Top Clans</div>
+                            <ol className="space-y-1">
+                                {topClans.slice(0,5).map((c, i) => (
+                                    <li key={c.id || i} className="flex items-center justify-between text-sm">
+                                        <span className="text-gray-200"><span className="text-gray-400 mr-2">#{i+1}</span>{c.name}</span>
+                                        <span className="text-eco-green">{c.points} pts</span>
+                                    </li>
+                                ))}
+                                {topClans.length === 0 && !lbLoading && (
+                                    <li className="text-xs text-gray-400">No clans yet.</li>
+                                )}
+                            </ol>
+                        </div>
+                    </div>
+                </div>
+            </aside>
         </div>
     );
 };
