@@ -838,6 +838,31 @@ def init_db() -> None:
 			conn.execute('ALTER TABLE waste_bounty ADD COLUMN after_image_url TEXT')
 		conn.commit()
 
+		# Notifications table (per-user notifications such as new bounty in city)
+		conn.execute(
+			(
+				'CREATE TABLE IF NOT EXISTS notifications ('
+				'  id INTEGER PRIMARY KEY AUTOINCREMENT,'
+				'  user_id INTEGER NOT NULL,'
+				'  type TEXT NOT NULL,'
+				'  message TEXT NOT NULL,'
+				'  bounty_id INTEGER,'
+				'  country TEXT,'
+				'  state TEXT,'
+				'  city TEXT,'
+				'  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,'
+				'  is_read INTEGER NOT NULL DEFAULT 0,'
+				'  read_at DATETIME,'
+				'  FOREIGN KEY(user_id) REFERENCES users(id),'
+				'  FOREIGN KEY(bounty_id) REFERENCES waste_bounty(id)'
+				')'
+			)
+		)
+		# Lightweight indexes for faster lookups
+		conn.execute('CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, is_read, created_at)')
+		conn.execute('CREATE INDEX IF NOT EXISTS idx_notifications_bounty ON notifications(bounty_id)')
+		conn.commit()
+
 
 app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": "*"}})
@@ -966,6 +991,66 @@ def me() -> Tuple[Any, int]:
 			"district": row[5],
 		}
 	return jsonify({"user": user}), 200
+
+
+@app.route('/api/notifications', methods=['GET'])
+def list_notifications() -> Tuple[Any, int]:
+	"""
+	Return notifications for the authenticated user. Supports ?only_unread=1 and ?limit=NN
+	"""
+	username = parse_username_from_auth()
+	if not username:
+		return jsonify({"error": "unauthorized"}), 401
+	limit = int((request.args.get('limit') or '30').strip() or '30')
+	only_unread = (request.args.get('only_unread', '0').strip() == '1')
+	with get_db_connection() as conn:
+		row = conn.execute('SELECT id FROM users WHERE username = ?', (username,)).fetchone()
+		if row is None:
+			return jsonify({"error": "user not found"}), 404
+		user_id = int(row[0])
+		if only_unread:
+			rows = conn.execute(
+				'SELECT id, type, message, bounty_id, country, state, city, created_at, is_read FROM notifications WHERE user_id = ? AND is_read = 0 ORDER BY id DESC LIMIT ?',
+				(user_id, limit)
+			).fetchall()
+		else:
+			rows = conn.execute(
+				'SELECT id, type, message, bounty_id, country, state, city, created_at, is_read FROM notifications WHERE user_id = ? ORDER BY id DESC LIMIT ?',
+				(user_id, limit)
+			).fetchall()
+		notifs = [
+			{
+				"id": r[0],
+				"type": r[1],
+				"message": r[2],
+				"bounty_id": r[3],
+				"country": r[4],
+				"state": r[5],
+				"city": r[6],
+				"created_at": r[7],
+				"is_read": bool(r[8]),
+			}
+			for r in rows
+		]
+	return jsonify({"notifications": notifs}), 200
+
+
+@app.route('/api/notifications/mark_all_read', methods=['POST'])
+def mark_all_notifications_read() -> Tuple[Any, int]:
+	"""
+	Mark all notifications for the authenticated user as read, set read_at
+	"""
+	username = parse_username_from_auth()
+	if not username:
+		return jsonify({"error": "unauthorized"}), 401
+	with get_db_connection() as conn:
+		row = conn.execute('SELECT id FROM users WHERE username = ?', (username,)).fetchone()
+		if row is None:
+			return jsonify({"error": "user not found"}), 404
+		user_id = int(row[0])
+		conn.execute('UPDATE notifications SET is_read = 1, read_at = CURRENT_TIMESTAMP WHERE user_id = ? AND is_read = 0', (user_id,))
+		conn.commit()
+	return jsonify({"message": "Notifications marked as read"}), 200
 
 
 @app.route('/api/coupons', methods=['GET'])
@@ -1115,10 +1200,23 @@ def create_bounty() -> Tuple[Any, int]:
 
 	# Create bounty record
 	with get_db_connection() as conn:
-		conn.execute(
+		cur = conn.execute(
 			'INSERT INTO waste_bounty (reporter_user_id, latitude, longitude, country, state, city, waste_image_url) VALUES (?, ?, ?, ?, ?, ?, ?)',
 			(user_id, latitude, longitude, address_data['country'], address_data['state'], address_data['city'], f"/uploads/{image_filename}")
 		)
+		bounty_id = cur.lastrowid
+		# Create notifications for all users in same city/state/country except reporter
+		user_rows = conn.execute(
+			'SELECT id, username FROM users WHERE TRIM(LOWER(country)) = TRIM(LOWER(?)) AND TRIM(LOWER(state)) = TRIM(LOWER(?)) AND TRIM(LOWER(city)) = TRIM(LOWER(?)) AND username != ?',
+			(address_data['country'], address_data['state'], address_data['city'], username)
+		).fetchall()
+		message = f"New waste bounty in {address_data['city']}, {address_data['state']}"
+		for r in user_rows:
+			uid = int(r[0])
+			conn.execute(
+				'INSERT INTO notifications (user_id, type, message, bounty_id, country, state, city) VALUES (?, ?, ?, ?, ?, ?, ?)',
+				(uid, 'BOUNTY_RAISED', message, bounty_id, address_data['country'], address_data['state'], address_data['city'])
+			)
 		conn.commit()
 	
 	return jsonify({
@@ -1129,7 +1227,8 @@ def create_bounty() -> Tuple[Any, int]:
 			"country": address_data['country'],
 			"state": address_data['state'],
 			"city": address_data['city']
-		}
+		},
+		"bounty_id": bounty_id
 	}), 201
 
 
