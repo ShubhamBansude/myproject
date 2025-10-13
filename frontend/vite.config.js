@@ -24,6 +24,13 @@ export default defineConfig({
     target: 'es2018',
     minify: 'esbuild',
   },
+  resolve: {
+    alias: process.env.USE_PREACT === '1' ? {
+      react: 'preact/compat',
+      'react-dom/test-utils': 'preact/test-utils',
+      'react-dom': 'preact/compat',
+    } : undefined,
+  },
   esbuild: {
     drop: ['console', 'debugger'],
   },
