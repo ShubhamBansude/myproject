@@ -7,7 +7,10 @@ const WelcomePage = ({ onGetStarted }) => {
     <div className="min-h-screen w-screen relative overflow-hidden bg-black font-sans">
       {/* Background image subtle overlay */}
       <div className="absolute inset-0 -z-10">
-        <img src="/bg-login.jpg" alt="bg" className="w-full h-full object-cover opacity-[0.35]" />
+        <picture>
+          <source srcSet="/bg-login.webp" type="image/webp" />
+          <img src="/bg-login.jpg" alt="bg" className="w-full h-full object-cover opacity-[0.35]" loading="lazy" />
+        </picture>
         <div className="absolute inset-0 bg-gradient-to-br from-black/50 via-black/40 to-black/30" />
       </div>
 

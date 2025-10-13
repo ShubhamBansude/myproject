@@ -1,8 +1,10 @@
 // src/components/Dashboard.jsx
 
-import React, { useState, useEffect } from 'react';
-import EarnPoints from './EarnPoints';
-import WasteBounty from './WasteBounty';
+import React, { useState, useEffect, lazy, Suspense } from 'react';
+
+// Lazy-load heavy tab panels to split Dashboard chunk
+const EarnPoints = lazy(() => import('./EarnPoints'));
+const WasteBounty = lazy(() => import('./WasteBounty'));
 
 const RewardsShop = ({ onRedeem }) => {
   const [coupons, setCoupons] = useState([]);
@@ -232,7 +234,9 @@ const Dashboard = ({ currentUser, onLogout, setCurrentUser }) => {
             {activeTab === 'detection' ? 'Upload Waste & Start Earning!' : activeTab.toUpperCase()}
           </h2>
           <div className="opacity-0 animate-fade-in-up" key={activeTab}>
-            {main}
+            <Suspense fallback={<div className="text-gray-400">Loading section…</div>}>
+              {main}
+            </Suspense>
           </div>
           {activeTab === 'rewards' && (
             <div className="pointer-events-none absolute bottom-4 right-4 z-10">
