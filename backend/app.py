@@ -866,6 +866,7 @@ def signup() -> Tuple[Any, int]:
 	country: str = (data.get('country') or '').strip()
 	state: str = (data.get('state') or '').strip()
 	city: str = (data.get('city') or '').strip()
+	district: str = (data.get('district') or '').strip()
 
 	if not username or not password or not country or not state or not city:
 		return jsonify({"error": "username, password, country, state, and city are required"}), 400
@@ -877,10 +878,17 @@ def signup() -> Tuple[Any, int]:
 
 	try:
 		with get_db_connection() as conn:
-			conn.execute(
-				'INSERT INTO users (username, password_hash, total_points, country, state, city) VALUES (?, ?, ?, ?, ?, ?)',
-				(username, password_hash, 100, country, state, city),
-			)
+			# Persist district when provided; otherwise DB default of "Unknown" applies
+			if district:
+				conn.execute(
+					'INSERT INTO users (username, password_hash, total_points, country, state, city, district) VALUES (?, ?, ?, ?, ?, ?, ?)',
+					(username, password_hash, 100, country, state, city, district),
+				)
+			else:
+				conn.execute(
+					'INSERT INTO users (username, password_hash, total_points, country, state, city) VALUES (?, ?, ?, ?, ?, ?)',
+					(username, password_hash, 100, country, state, city),
+				)
 			conn.commit()
 	except sqlite3.IntegrityError:
 		return jsonify({"error": "username already exists"}), 409
@@ -912,7 +920,7 @@ def login() -> Tuple[Any, int]:
 
 	with get_db_connection() as conn:
 		row = conn.execute(
-			'SELECT username, password_hash, total_points FROM users WHERE username = ?',
+			'SELECT username, password_hash, total_points, country, state, city FROM users WHERE username = ?',
 			(username,),
 		).fetchone()
 
@@ -926,10 +934,38 @@ def login() -> Tuple[Any, int]:
 	user = {
 		"username": row[0],
 		"total_points": row[2],
+		"country": row[3],
+		"state": row[4],
+		"city": row[5],
 	}
 	token = f"token_{username}"
 
 	return jsonify({"user": user, "token": token}), 200
+
+@app.route('/api/me', methods=['GET'])
+def me() -> Tuple[Any, int]:
+	"""
+	Return the authenticated user's profile with location fields
+	"""
+	username = parse_username_from_auth()
+	if not username:
+		return jsonify({"error": "unauthorized"}), 401
+	with get_db_connection() as conn:
+		row = conn.execute(
+			'SELECT username, total_points, country, state, city, district FROM users WHERE username = ?',
+			(username,),
+		).fetchone()
+		if row is None:
+			return jsonify({"error": "user not found"}), 404
+		user = {
+			"username": row[0],
+			"total_points": row[1],
+			"country": row[2],
+			"state": row[3],
+			"city": row[4],
+			"district": row[5],
+		}
+	return jsonify({"user": user}), 200
 
 
 @app.route('/api/coupons', methods=['GET'])
