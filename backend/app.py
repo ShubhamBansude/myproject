@@ -103,15 +103,37 @@ def reverse_geocode(latitude: float, longitude: float) -> dict:
 		location = geolocator.reverse(f"{latitude}, {longitude}", language='en')
 		
 		if not location:
+			print(f"Reverse geocoding failed for coordinates: {latitude}, {longitude}")
 			return None
 		
 		address = location.raw.get('address', {})
+		print(f"Address components for {latitude}, {longitude}: {address}")
 		
-		return {
+		# Try multiple possible city fields
+		city = (address.get('city') or 
+		        address.get('town') or 
+		        address.get('village') or 
+		        address.get('municipality') or
+		        address.get('suburb') or
+		        address.get('county') or
+		        address.get('district') or
+		        'Unknown')
+		
+		# Try multiple possible state fields
+		state = (address.get('state') or 
+		         address.get('province') or 
+		         address.get('region') or
+		         address.get('administrative') or
+		         'Unknown')
+		
+		result = {
 			'country': address.get('country', 'Unknown'),
-			'state': address.get('state', address.get('province', 'Unknown')),
-			'city': address.get('city', address.get('town', address.get('village', 'Unknown')))
+			'state': state,
+			'city': city
 		}
+		
+		print(f"Parsed location: {result}")
+		return result
 		
 	except Exception as e:
 		print(f"Error in reverse geocoding: {str(e)}")
@@ -531,31 +553,34 @@ def analyze_with_gemini(image: np.ndarray) -> Dict[str, Any]:
 		IMPORTANT: You MUST respond ONLY with valid JSON. Do not include any other text.
 		
 		For each waste item found, provide:
-		- name: Specific item name/type
+		- name: Specific item name/type (be very specific)
 		- category: "recyclable", "hazardous", or "general" 
-		- description: Detailed description of the item
+		- material_type: Specific material (e.g., "PET plastic", "aluminum", "cardboard", "glass")
+		- description: Detailed description of the item including size, color, condition
 		- disposal_tip: Specific instructions for proper disposal
 		- environmental_impact: Brief note on environmental impact
+		- recyclability: "high", "medium", "low", or "not_recyclable"
+		- decomposition_time: Estimated time to decompose (e.g., "450 years", "2-6 weeks", "indefinite")
 		
 		Look for ALL types of waste including:
-		- Plastic bottles, containers, bags, packaging
-		- Aluminum/metal cans, containers
-		- Glass bottles, jars, containers
-		- Cardboard, paper products, newspapers
-		- Batteries (all types)
-		- Chemical containers, paint cans
-		- Light bulbs, fluorescent tubes
-		- Electronic waste, cables, devices
-		- Food waste, organic matter
-		- Textiles, clothing
-		- Construction materials
-		- Medical waste
+		- Plastic bottles, containers, bags, packaging (specify plastic type if visible)
+		- Aluminum/metal cans, containers, foil
+		- Glass bottles, jars, containers (specify glass type)
+		- Cardboard, paper products, newspapers, magazines
+		- Batteries (all types - AA, AAA, lithium, lead-acid)
+		- Chemical containers, paint cans, aerosol cans
+		- Light bulbs, fluorescent tubes, LED bulbs
+		- Electronic waste, cables, devices, chargers
+		- Food waste, organic matter, compostable items
+		- Textiles, clothing, fabric scraps
+		- Construction materials, wood, metal scraps
+		- Medical waste, syringes, bandages
 		- Any other waste materials
 		
 		Classification guidelines:
-		- recyclable: Items that can be recycled (plastic bottles, metal cans, glass, paper, cardboard)
-		- hazardous: Items that are dangerous or require special disposal (batteries, chemicals, electronics, medical waste)
-		- general: Items that go to regular landfill (food waste, non-recyclable plastics, mixed materials)
+		- recyclable: Items that can be recycled (plastic bottles, metal cans, glass, paper, cardboard, electronics)
+		- hazardous: Items that are dangerous or require special disposal (batteries, chemicals, electronics, medical waste, fluorescent bulbs)
+		- general: Items that go to regular landfill (food waste, non-recyclable plastics, mixed materials, contaminated items)
 		
 		If no waste items are found, return: {"items": [], "summary": "No waste items detected in the image"}
 		
@@ -565,12 +590,19 @@ def analyze_with_gemini(image: np.ndarray) -> Dict[str, Any]:
 				{
 					"name": "specific item name",
 					"category": "recyclable|hazardous|general",
+					"material_type": "specific material",
 					"description": "detailed description",
 					"disposal_tip": "specific disposal instructions",
-					"environmental_impact": "brief environmental note"
+					"environmental_impact": "brief environmental note",
+					"recyclability": "high|medium|low|not_recyclable",
+					"decomposition_time": "estimated time"
 				}
 			],
-			"summary": "Overall waste analysis summary"
+			"summary": "Overall waste analysis summary with total count and main categories",
+			"total_items": "number of items found",
+			"recyclable_count": "number of recyclable items",
+			"hazardous_count": "number of hazardous items",
+			"general_count": "number of general waste items"
 		}
 		"""
 		
@@ -966,13 +998,34 @@ def create_bounty() -> Tuple[Any, int]:
 	
 	# Extract GPS coordinates from image
 	latitude, longitude = extract_gps_from_image(file_bytes)
+	
+	# If no GPS in photo, check if location data was provided in form
 	if latitude is None or longitude is None:
-		return jsonify({"error": "Photo must contain valid GPS location data. Please enable location services and take a new photo."}), 400
+		latitude_str = request.form.get('latitude')
+		longitude_str = request.form.get('longitude')
+		
+		if latitude_str and longitude_str:
+			try:
+				latitude = float(latitude_str)
+				longitude = float(longitude_str)
+				print(f"Using provided location: {latitude}, {longitude}")
+			except ValueError:
+				return jsonify({"error": "Invalid location data provided"}), 400
+		else:
+			return jsonify({"error": "Photo must contain valid GPS location data. Please enable location services and take a new photo."}), 400
 	
 	# Reverse geocode to get address components
 	address_data = reverse_geocode(latitude, longitude)
 	if not address_data:
-		return jsonify({"error": "Unable to determine location from GPS coordinates"}), 400
+		# Fallback: use provided location data or default values
+		address_data = {
+			'country': request.form.get('country', 'India'),
+			'state': request.form.get('state', 'Maharashtra'),
+			'city': request.form.get('city', 'Unknown')
+		}
+		print(f"Using fallback location data: {address_data}")
+	else:
+		print(f"Reverse geocoding successful: {address_data}")
 	
 	# Get user info
 	with get_db_connection() as conn:
@@ -1029,10 +1082,29 @@ def get_bounties() -> Tuple[Any, int]:
 	
 	# Get active bounties in user's location
 	with get_db_connection() as conn:
+		# First try exact match
 		rows = conn.execute(
 			'SELECT id, latitude, longitude, country, state, city, bounty_points, waste_image_url, created_at FROM waste_bounty WHERE status = "REPORTED" AND country = ? AND state = ? AND city = ? ORDER BY created_at DESC',
 			(user_country, user_state, user_city)
 		).fetchall()
+		
+		# If no exact match, try state-level matching (for cases where city is "Unknown")
+		if not rows and user_city != 'Unknown':
+			print(f"No exact city match found for {user_city}, trying state-level match")
+			rows = conn.execute(
+				'SELECT id, latitude, longitude, country, state, city, bounty_points, waste_image_url, created_at FROM waste_bounty WHERE status = "REPORTED" AND country = ? AND state = ? ORDER BY created_at DESC',
+				(user_country, user_state)
+			).fetchall()
+		
+		# If still no match and user location is unknown, show all bounties in the country
+		if not rows and (user_city == 'Unknown' or user_state == 'Unknown'):
+			print(f"User location unknown, showing all bounties in country: {user_country}")
+			rows = conn.execute(
+				'SELECT id, latitude, longitude, country, state, city, bounty_points, waste_image_url, created_at FROM waste_bounty WHERE status = "REPORTED" AND country = ? ORDER BY created_at DESC',
+				(user_country,)
+			).fetchall()
+		
+		print(f"Found {len(rows)} bounties for user location: {user_country}, {user_state}, {user_city}")
 		
 		bounties = []
 		for row in rows:
@@ -1075,11 +1147,26 @@ def verify_cleanup_with_gemini(original_image: np.ndarray, before_image: np.ndar
 		# Initialize Gemini model
 		model = genai.GenerativeModel('gemini-2.0-flash')
 		
-		# Use the exact prompt specified
+		# Use the enhanced prompt for comprehensive waste detection
 		prompt = """Analyze this sequence of three images for cleanup verification: Image 1 (Original Report Photo), Image 2 (User's Before Cleanup), and Image 3 (User's After Cleanup). GPS has confirmed Image 2 and 3 are at the correct location.
-Scene Match: Based on static background features (e.g., walls, trees, unique objects), confirm if Image 2 and Image 3 show the exact same scene/viewpoint (excluding the garbage itself). (Respond with: scene_match: true/false).
-Waste Verification: Is there significant garbage visible in Image 2?
-Cleanup Result: Is the garbage visible in Image 2 now absent or removed in Image 3?
+
+Scene Match: Based on static background features (e.g., walls, trees, unique objects, water bodies, landscape), confirm if Image 2 and Image 3 show the exact same scene/viewpoint (excluding the garbage itself). (Respond with: scene_match: true/false).
+
+Waste Verification: Is there significant garbage, waste, or pollution visible in Image 2? This includes:
+- Plastic waste, bottles, bags, containers
+- Organic waste, food scraps, leaves
+- Construction debris, rubble, materials
+- Floating waste in water bodies (rivers, canals, lakes)
+- Scattered debris in public spaces (parks, streets, markets)
+- Industrial waste, metal scraps, hazardous materials
+- Any visible pollution or environmental degradation
+
+Cleanup Result: Is the garbage, waste, or pollution visible in Image 2 now absent, removed, or significantly reduced in Image 3? Look for:
+- Complete removal of waste materials
+- Significant reduction in pollution levels
+- Restoration of clean appearance
+- Improvement in environmental condition
+
 Respond with a JSON object: {'scene_match': [true/false], 'waste_present_before': [true/false], 'cleanup_verified': [true/false]}."""
 		
 		# Generate response
@@ -1560,6 +1647,7 @@ def analyze_detailed() -> Tuple[Any, int]:
 			return jsonify({"error": f"Video processing failed: {str(e)}"}), 500
 
 	# Check if this exact file has been uploaded by this user before
+	duplicate = False
 	with get_db_connection() as conn:
 		row = conn.execute('SELECT id FROM users WHERE username = ?', (username,)).fetchone()
 		if row is None:
@@ -1573,10 +1661,8 @@ def analyze_detailed() -> Tuple[Any, int]:
 		).fetchone()
 
 		if existing_hash:
-			return jsonify({
-				"error": f"This exact {input_type} has already been analyzed by you. Please upload a different {input_type}.",
-				"duplicate": True
-			}), 409
+			# Mark as duplicate but do not abort — return analysis but flag duplicate so frontend can decide
+			duplicate = True
 
 	# Get detailed analysis based on input type
 	if input_type == 'photo':
@@ -1592,16 +1678,43 @@ def analyze_detailed() -> Tuple[Any, int]:
 		# Categorize items
 		categorized = categorize_gemini_items(gemini_result)
 		
-		# Calculate potential points
+		# Calculate potential points based on detailed classification
 		potential_points = 0
 		recyclable_count = len(categorized["recyclable"])
 		hazardous_count = len(categorized["hazardous"])
 		general_count = len(categorized["general"])
 		
-		if recyclable_count > 0 or hazardous_count > 0:
-			potential_points = POINTS_PER_DETECTION * (recyclable_count + hazardous_count)
-		elif general_count > 0:
-			potential_points = NON_RECYCLABLE_FLAT_POINTS
+		# Points calculation based on waste type and recyclability
+		for item in categorized["recyclable"]:
+			recyclability = item.get("recyclability", "medium")
+			if recyclability == "high":
+				potential_points += 150  # High recyclability items
+			elif recyclability == "medium":
+				potential_points += 100  # Medium recyclability items
+			else:
+				potential_points += 50   # Low recyclability items
+		
+		for item in categorized["hazardous"]:
+			potential_points += 200  # Hazardous items get highest points
+		
+		for item in categorized["general"]:
+			potential_points += 25   # General waste gets lower points
+		
+		# If no detailed classification, use old system
+		if potential_points == 0:
+			if recyclable_count > 0 or hazardous_count > 0:
+				potential_points = POINTS_PER_DETECTION * (recyclable_count + hazardous_count)
+			elif general_count > 0:
+				potential_points = NON_RECYCLABLE_FLAT_POINTS
+
+		# Persist image hash for this user to prevent future repeats
+		with get_db_connection() as conn:
+			try:
+				if not duplicate:
+					conn.execute('INSERT INTO image_hashes (user_id, image_hash) VALUES (?, ?)', (user_id, file_hash))
+					conn.commit()
+			except Exception as e:
+				print(f"Warning: failed to persist image hash: {str(e)}")
 
 		response = {
 			"analysis": gemini_result,
@@ -1611,7 +1724,8 @@ def analyze_detailed() -> Tuple[Any, int]:
 			"disposal_tips": [item.get("disposal_tip", "") for item in gemini_result.get("items", []) if item.get("disposal_tip")],
 			"environmental_impacts": [item.get("environmental_impact", "") for item in gemini_result.get("items", []) if item.get("environmental_impact")],
 			"summary": gemini_result.get("summary", ""),
-			"input_type": input_type
+			"input_type": input_type,
+			"duplicate": duplicate
 		}
 		
 		return jsonify(response), 200
@@ -1640,7 +1754,17 @@ def analyze_detailed() -> Tuple[Any, int]:
 			"reasoning": video_analysis.get("reasoning", "No reasoning provided"),
 			"input_type": input_type
 		}
-		
+
+		# Persist hash to prevent repeated submissions being treated as new
+		with get_db_connection() as conn:
+			try:
+				if not duplicate:
+					conn.execute('INSERT INTO image_hashes (user_id, image_hash) VALUES (?, ?)', (user_id, file_hash))
+					conn.commit()
+			except Exception as e:
+				print(f"Warning: failed to persist video hash: {str(e)}")
+
+		response["duplicate"] = duplicate
 		return jsonify(response), 200
 
 
