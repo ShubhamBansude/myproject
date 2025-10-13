@@ -1,13 +1,13 @@
 {
   "name": "frontend",
-  "private": true,
   "version": "0.0.0",
+  "private": true,
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "lint": "eslint . --ext .js,.jsx,.ts,.tsx --report-unused-disable-directives --max-warnings=0"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.1.14",
@@ -30,3 +30,4 @@
     "vite": "^7.1.7"
   }
 }
+

@@ -814,6 +814,8 @@ def init_db() -> None:
 			'  city TEXT NOT NULL,'
 			'  bounty_points INTEGER NOT NULL DEFAULT 200,'
 			'  waste_image_url TEXT NOT NULL,'
+			'  before_image_url TEXT,'
+			'  after_image_url TEXT,'
 			'  status TEXT NOT NULL DEFAULT "REPORTED",'
 			'  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,'
 			'  claimed_at DATETIME,'
@@ -823,6 +825,13 @@ def init_db() -> None:
 			'  FOREIGN KEY(claimed_by_user_id) REFERENCES users(id)'
 			')'
 		)
+		# Add new columns if they don't exist (for upgrades)
+		cursor = conn.execute('PRAGMA table_info(waste_bounty)')
+		columns = [column[1] for column in cursor.fetchall()]
+		if 'before_image_url' not in columns:
+			conn.execute('ALTER TABLE waste_bounty ADD COLUMN before_image_url TEXT')
+		if 'after_image_url' not in columns:
+			conn.execute('ALTER TABLE waste_bounty ADD COLUMN after_image_url TEXT')
 		conn.commit()
 
 
@@ -1044,6 +1053,26 @@ def create_bounty() -> Tuple[Any, int]:
 	with open(image_path, 'wb') as f:
 		f.write(file_bytes)
 	
+	# Validate with Gemini that the photo shows a public waste area
+	# Decode the saved image for analysis
+	np_arr = np.frombuffer(file_bytes, np.uint8)
+	image_cv = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+	gemini_result = analyze_with_gemini(image_cv) if image_cv is not None else {"items": []}
+	items = gemini_result.get("items", [])
+	if not items:
+		return jsonify({"error": "Image does not appear to show a waste area. Please capture a clear scene with visible waste in a public place."}), 400
+
+	# Prevent duplicate bounties for the same coordinates (within ~20m)
+	with get_db_connection() as conn:
+		rows = conn.execute(
+			'SELECT id, latitude, longitude FROM waste_bounty WHERE status = "REPORTED" AND TRIM(LOWER(city)) = TRIM(LOWER(?))',
+			(address_data['city'],)
+		).fetchall()
+		for r in rows:
+			existing_lat, existing_lon = float(r[1]), float(r[2])
+			if calculate_distance(existing_lat, existing_lon, latitude, longitude) <= 20:
+				return jsonify({"error": "Bounty is already raised for this location."}), 409
+
 	# Create bounty record
 	with get_db_connection() as conn:
 		conn.execute(
@@ -1080,31 +1109,19 @@ def get_bounties() -> Tuple[Any, int]:
 			return jsonify({"error": "user not found"}), 404
 		user_country, user_state, user_city = row[0], row[1], row[2]
 	
-	# Get active bounties in user's location
+	# Get active bounties strictly in user's city
 	with get_db_connection() as conn:
-		# First try exact match
 		rows = conn.execute(
-			'SELECT id, latitude, longitude, country, state, city, bounty_points, waste_image_url, created_at FROM waste_bounty WHERE status = "REPORTED" AND country = ? AND state = ? AND city = ? ORDER BY created_at DESC',
+			'SELECT id, latitude, longitude, country, state, city, bounty_points, waste_image_url, created_at, before_image_url, after_image_url\n\
+			 FROM waste_bounty\n\
+			 WHERE status = "REPORTED"\n\
+			   AND TRIM(LOWER(country)) = TRIM(LOWER(?))\n\
+			   AND TRIM(LOWER(state)) = TRIM(LOWER(?))\n\
+			   AND TRIM(LOWER(city)) = TRIM(LOWER(?))\n\
+			 ORDER BY created_at DESC',
 			(user_country, user_state, user_city)
 		).fetchall()
-		
-		# If no exact match, try state-level matching (for cases where city is "Unknown")
-		if not rows and user_city != 'Unknown':
-			print(f"No exact city match found for {user_city}, trying state-level match")
-			rows = conn.execute(
-				'SELECT id, latitude, longitude, country, state, city, bounty_points, waste_image_url, created_at FROM waste_bounty WHERE status = "REPORTED" AND country = ? AND state = ? ORDER BY created_at DESC',
-				(user_country, user_state)
-			).fetchall()
-		
-		# If still no match and user location is unknown, show all bounties in the country
-		if not rows and (user_city == 'Unknown' or user_state == 'Unknown'):
-			print(f"User location unknown, showing all bounties in country: {user_country}")
-			rows = conn.execute(
-				'SELECT id, latitude, longitude, country, state, city, bounty_points, waste_image_url, created_at FROM waste_bounty WHERE status = "REPORTED" AND country = ? ORDER BY created_at DESC',
-				(user_country,)
-			).fetchall()
-		
-		print(f"Found {len(rows)} bounties for user location: {user_country}, {user_state}, {user_city}")
+		print(f"Found {len(rows)} bounties for user city: {user_city}")
 		
 		bounties = []
 		for row in rows:
@@ -1117,7 +1134,9 @@ def get_bounties() -> Tuple[Any, int]:
 				"city": row[5],
 				"bounty_points": row[6],
 				"waste_image_url": row[7],
-				"created_at": row[8]
+				"created_at": row[8],
+				"before_image_url": row[9],
+				"after_image_url": row[10]
 			})
 	
 	return jsonify({"bounties": bounties}), 200
@@ -1260,13 +1279,50 @@ def verify_cleanup() -> Tuple[Any, int]:
 	if before_file.filename == '' or after_file.filename == '':
 		return jsonify({"error": "empty filenames"}), 400
 
-	# Read file bytes
+	# Read and persist files (ensure both are saved correctly)
 	before_bytes = before_file.read()
 	after_bytes = after_file.read()
+
+	# Create uploads directory
+	uploads_dir = os.path.join(os.path.dirname(__file__), 'uploads')
+	os.makedirs(uploads_dir, exist_ok=True)
+
+	# Build filenames
+	before_filename = f"before_{int(time.time())}.jpg"
+	after_filename = f"after_{int(time.time())}.jpg"
+	before_path = os.path.join(uploads_dir, before_filename)
+	after_path = os.path.join(uploads_dir, after_filename)
+
+	# Save both images to disk
+	with open(before_path, 'wb') as f:
+		f.write(before_bytes)
+	with open(after_path, 'wb') as f:
+		f.write(after_bytes)
 	
 	# Extract GPS coordinates from both photos
 	before_lat, before_lon = extract_gps_from_image(before_bytes)
 	after_lat, after_lon = extract_gps_from_image(after_bytes)
+
+	# Fallback to provided coordinates if EXIF missing
+	if before_lat is None or before_lon is None:
+		before_lat_str = request.form.get('before_latitude')
+		before_lon_str = request.form.get('before_longitude')
+		if before_lat_str and before_lon_str:
+			try:
+				before_lat = float(before_lat_str)
+				before_lon = float(before_lon_str)
+			except ValueError:
+				return jsonify({"error": "Invalid before photo GPS data provided"}), 400
+
+	if after_lat is None or after_lon is None:
+		after_lat_str = request.form.get('after_latitude')
+		after_lon_str = request.form.get('after_longitude')
+		if after_lat_str and after_lon_str:
+			try:
+				after_lat = float(after_lat_str)
+				after_lon = float(after_lon_str)
+			except ValueError:
+				return jsonify({"error": "Invalid after photo GPS data provided"}), 400
 	
 	if before_lat is None or before_lon is None:
 		return jsonify({"error": "Before cleanup photo must contain valid GPS location data"}), 400
@@ -1299,10 +1355,39 @@ def verify_cleanup() -> Tuple[Any, int]:
 	if not os.path.exists(original_image_path):
 		return jsonify({"error": "original bounty image not found"}), 500
 	
+	# Optional: Development/testing mode to bypass Gemini scene check
+	dev_mode = (request.form.get('dev_mode', '').lower() == 'true') or (os.environ.get('DEV_MODE_CLEANUP') == '1')
+	if dev_mode:
+		# Directly approve if GPS validation passed; persist image URLs and award points
+		with get_db_connection() as conn:
+			row = conn.execute('SELECT id, total_points FROM users WHERE username = ?', (username,)).fetchone()
+			if row is None:
+				return jsonify({"error": "user not found"}), 404
+			user_id, current_points = int(row[0]), int(row[1])
+
+			bounty_row = conn.execute('SELECT bounty_points FROM waste_bounty WHERE id = ?', (bounty_id,)).fetchone()
+			bounty_points = int(bounty_row[0]) if bounty_row else 200
+
+			conn.execute(
+				'UPDATE waste_bounty SET status = "CLOSED", claimed_by_user_id = ?, claimed_at = CURRENT_TIMESTAMP, completed_at = CURRENT_TIMESTAMP, before_image_url = ?, after_image_url = ? WHERE id = ?',
+				(user_id, f"/uploads/{before_filename}", f"/uploads/{after_filename}", bounty_id)
+			)
+			new_total = current_points + bounty_points
+			conn.execute('UPDATE users SET total_points = ? WHERE id = ?', (new_total, user_id))
+			conn.execute('INSERT INTO transactions (user_id, points_change, reason) VALUES (?, ?, ?)', (user_id, bounty_points, f'DEV MODE: Bounty Cleanup Completed - Bounty #{bounty_id}'))
+			conn.commit()
+
+		return jsonify({
+			"message": "Cleanup verified (DEV MODE)",
+			"points_awarded": bounty_points,
+			"total_points": new_total,
+			"dev_mode": True
+		}), 200
+
 	# Convert images to OpenCV format for Gemini analysis
 	original_image = cv2.imread(original_image_path)
-	before_image = cv2.imdecode(np.frombuffer(before_bytes, np.uint8), cv2.IMREAD_COLOR)
-	after_image = cv2.imdecode(np.frombuffer(after_bytes, np.uint8), cv2.IMREAD_COLOR)
+	before_image = cv2.imread(before_path)
+	after_image = cv2.imread(after_path)
 	
 	# Verify cleanup with Gemini AI
 	verification_result = verify_cleanup_with_gemini(original_image, before_image, after_image)
@@ -1327,10 +1412,10 @@ def verify_cleanup() -> Tuple[Any, int]:
 			bounty_row = conn.execute('SELECT bounty_points FROM waste_bounty WHERE id = ?', (bounty_id,)).fetchone()
 			bounty_points = int(bounty_row[0]) if bounty_row else 200
 			
-			# Update bounty status
+			# Update bounty status and persist image URLs
 			conn.execute(
-				'UPDATE waste_bounty SET status = "CLOSED", claimed_by_user_id = ?, claimed_at = CURRENT_TIMESTAMP, completed_at = CURRENT_TIMESTAMP WHERE id = ?',
-				(user_id, bounty_id)
+				'UPDATE waste_bounty SET status = "CLOSED", claimed_by_user_id = ?, claimed_at = CURRENT_TIMESTAMP, completed_at = CURRENT_TIMESTAMP, before_image_url = ?, after_image_url = ? WHERE id = ?',
+				(user_id, f"/uploads/{before_filename}", f"/uploads/{after_filename}", bounty_id)
 			)
 			
 			# Award points to user

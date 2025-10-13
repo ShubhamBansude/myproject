@@ -24,6 +24,8 @@ const WasteBounty = ({ currentUser, updatePoints }) => {
     const [afterPreview, setAfterPreview] = useState(null);
     const [beforePhotoSource, setBeforePhotoSource] = useState('camera');
     const [afterPhotoSource, setAfterPhotoSource] = useState('camera');
+    const [beforeLocation, setBeforeLocation] = useState(null);
+    const [afterLocation, setAfterLocation] = useState(null);
     const [cleanupStep, setCleanupStep] = useState('before'); // 'before', 'after', 'submit'
 
     // Load bounties on component mount
@@ -165,6 +167,7 @@ const WasteBounty = ({ currentUser, updatePoints }) => {
             setError(null);
             
             if (!result.hasGPS) {
+                setBeforeLocation(result.location);
                 setSuccess('✅ Gallery photo selected! Current location has been added as GPS data.');
             }
         } catch (err) {
@@ -178,6 +181,7 @@ const WasteBounty = ({ currentUser, updatePoints }) => {
         setBeforePhotoSource(source);
         setBeforePhoto(null);
         setBeforePreview(null);
+        setBeforeLocation(null);
         setError(null);
     };
 
@@ -192,6 +196,7 @@ const WasteBounty = ({ currentUser, updatePoints }) => {
             setError(null);
             
             if (!result.hasGPS) {
+                setAfterLocation(result.location);
                 setSuccess('✅ Gallery photo selected! Current location has been added as GPS data.');
             }
         } catch (err) {
@@ -205,6 +210,7 @@ const WasteBounty = ({ currentUser, updatePoints }) => {
         setAfterPhotoSource(source);
         setAfterPhoto(null);
         setAfterPreview(null);
+        setAfterLocation(null);
         setError(null);
     };
 
@@ -293,6 +299,14 @@ const WasteBounty = ({ currentUser, updatePoints }) => {
             formData.append('bounty_id', selectedBounty.id);
             formData.append('before_cleanup_photo', beforePhoto);
             formData.append('after_cleanup_photo', afterPhoto);
+            if (beforeLocation) {
+                formData.append('before_latitude', String(beforeLocation.latitude));
+                formData.append('before_longitude', String(beforeLocation.longitude));
+            }
+            if (afterLocation) {
+                formData.append('after_latitude', String(afterLocation.latitude));
+                formData.append('after_longitude', String(afterLocation.longitude));
+            }
 
             const res = await fetch('http://localhost:5000/api/verify_cleanup', {
                 method: 'POST',
@@ -320,6 +334,8 @@ const WasteBounty = ({ currentUser, updatePoints }) => {
             setAfterPhoto(null);
             setBeforePreview(null);
             setAfterPreview(null);
+            setBeforeLocation(null);
+            setAfterLocation(null);
             setCleanupStep('before');
             setActiveTab('bounties');
             loadBounties(); // Refresh bounties list
