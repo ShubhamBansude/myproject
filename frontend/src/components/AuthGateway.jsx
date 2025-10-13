@@ -63,13 +63,36 @@ const Login = ({ onLoginSuccess }) => {
 
 
 // Lightweight auto-suggest input for locations
-const AutoSuggestInput = ({ label, placeholder, value, onChange, suggestions, inputProps = {} }) => {
+const AutoSuggestInput = ({ label, placeholder, value, onChange, type, fallback = [], inputProps = {} }) => {
     const [open, setOpen] = useState(false);
+    const [remote, setRemote] = useState([]);
+
+    // Debounced remote fetch from backend for global locations
+    useMemo(() => {
+        const q = (value || '').trim();
+        if (q.length < 2) { setRemote([]); return; }
+        const controller = new AbortController();
+        const t = setTimeout(async () => {
+            try {
+                const url = `http://localhost:5000/api/locations/suggest?type=${encodeURIComponent(type)}&q=${encodeURIComponent(q)}`;
+                const res = await fetch(url, { signal: controller.signal });
+                const data = await res.json().catch(() => ({ suggestions: [] }));
+                const suggestions = Array.isArray(data?.suggestions) ? data.suggestions : [];
+                setRemote(suggestions);
+            } catch (_) {
+                setRemote([]);
+            }
+        }, 250);
+        return () => { clearTimeout(t); controller.abort(); };
+    }, [value, type]);
+
     const filtered = useMemo(() => {
         const q = (value || '').toLowerCase();
         if (q.length < 2) return [];
-        return suggestions.filter((s) => s.toLowerCase().includes(q)).slice(0, 8);
-    }, [value, suggestions]);
+        const src = [...remote, ...fallback];
+        const uniq = Array.from(new Set(src.map(String)));
+        return uniq.filter((s) => s.toLowerCase().startsWith(q)).slice(0, 12);
+    }, [value, remote, fallback]);
 
     return (
         <div className="relative">
@@ -83,12 +106,13 @@ const AutoSuggestInput = ({ label, placeholder, value, onChange, suggestions, in
                 onBlur={() => setTimeout(() => setOpen(false), 120)}
                 className="w-full px-4 py-3 rounded-xl bg-white/5 border border-white/10 text-gray-100 placeholder:text-gray-400 focus:outline-none focus:border-eco-green focus:ring-2 focus:ring-eco-green/30 transition"
                 {...inputProps}
+                autoComplete="off"
             />
             {open && filtered.length > 0 && (
                 <div className="absolute z-20 mt-1 w-full max-h-56 overflow-auto rounded-lg bg-[#0f172a]/95 border border-white/10 shadow-2xl">
                     {filtered.map((s, idx) => (
                         <button
-                            key={idx}
+                            key={`${s}-${idx}`}
                             type="button"
                             onMouseDown={(e) => e.preventDefault()}
                             onClick={() => { onChange(s); setOpen(false); }}
@@ -201,10 +225,10 @@ const Signup = ({ onSignupSuccess }) => {
                     {showConfirmPassword ? '🙈' : '👁️'}
                 </button>
             </div>
-            <AutoSuggestInput label="Country" placeholder="Country name" value={country} onChange={setCountry} suggestions={COUNTRY_SUGGESTIONS} />
-            <AutoSuggestInput label="State/Province" placeholder="State name" value={state} onChange={setState} suggestions={STATE_SUGGESTIONS} />
-            <AutoSuggestInput label="City" placeholder="City name" value={city} onChange={setCity} suggestions={CITY_SUGGESTIONS} />
-            <AutoSuggestInput label="District" placeholder="District name" value={district} onChange={setDistrict} suggestions={DISTRICT_SUGGESTIONS} />
+            <AutoSuggestInput label="Country" placeholder="Country name" value={country} onChange={setCountry} type="country" fallback={COUNTRY_SUGGESTIONS} />
+            <AutoSuggestInput label="State/Province" placeholder="State name" value={state} onChange={setState} type="state" fallback={STATE_SUGGESTIONS} />
+            <AutoSuggestInput label="City" placeholder="City name" value={city} onChange={setCity} type="city" fallback={CITY_SUGGESTIONS} />
+            <AutoSuggestInput label="District" placeholder="District name" value={district} onChange={setDistrict} type="district" fallback={DISTRICT_SUGGESTIONS} />
             {error && <div className="text-red-400 text-sm bg-red-500/10 border border-red-500/30 rounded-lg p-2">{error}</div>}
             <button type="submit" className="w-full py-3 bg-eco-accent text-eco-dark font-semibold rounded-xl hover:brightness-110 transition duration-300 shadow-[0_8px_30px_rgba(245,158,11,0.25)]">
                 Create Account

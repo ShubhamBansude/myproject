@@ -863,12 +863,13 @@ def signup() -> Tuple[Any, int]:
 	data: Dict[str, Any] = request.get_json(silent=True) or {}
 	username: str = (data.get('username') or '').strip()
 	password: str = (data.get('password') or '').strip()
-	country: str = (data.get('country') or '').strip()
-	state: str = (data.get('state') or '').strip()
-	city: str = (data.get('city') or '').strip()
+    country: str = (data.get('country') or '').strip()
+    state: str = (data.get('state') or '').strip()
+    city: str = (data.get('city') or '').strip()
+    district: str = (data.get('district') or '').strip()
 
-	if not username or not password or not country or not state or not city:
-		return jsonify({"error": "username, password, country, state, and city are required"}), 400
+    if not username or not password or not country or not state or not city or not district:
+        return jsonify({"error": "username, password, country, state, city, and district are required"}), 400
 
 	# Hash password
 	password_bytes = password.encode('utf-8')
@@ -877,10 +878,10 @@ def signup() -> Tuple[Any, int]:
 
 	try:
 		with get_db_connection() as conn:
-			conn.execute(
-				'INSERT INTO users (username, password_hash, total_points, country, state, city) VALUES (?, ?, ?, ?, ?, ?)',
-				(username, password_hash, 100, country, state, city),
-			)
+            conn.execute(
+                'INSERT INTO users (username, password_hash, total_points, country, state, city, district) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                (username, password_hash, 100, country, state, city, district),
+            )
 			conn.commit()
 	except sqlite3.IntegrityError:
 		return jsonify({"error": "username already exists"}), 409
@@ -888,17 +889,67 @@ def signup() -> Tuple[Any, int]:
 		print(f"Database error during signup: {str(e)}")
 		return jsonify({"error": f"Database error: {str(e)}"}), 500
 
-	user = {
-		"username": username,
-		"total_points": 100,
-		"country": country,
-		"state": state,
-		"city": city,
-	}
+    user = {
+        "username": username,
+        "total_points": 100,
+        "country": country,
+        "state": state,
+        "city": city,
+        "district": district,
+    }
 	# Simple token stub; replace with real JWT/session later
 	token = f"token_{username}"
 
 	return jsonify({"user": user, "token": token}), 201
+
+
+@app.route('/api/locations/suggest', methods=['GET'])
+def suggest_locations() -> Tuple[Any, int]:
+    """Suggest global locations using Nominatim based on prefix.
+    Params: type=country|state|city|district, q=prefix
+    """
+    q = (request.args.get('q') or '').strip()
+    kind = (request.args.get('type') or 'country').strip().lower()
+    if len(q) < 2:
+        return jsonify({"suggestions": []}), 200
+
+    try:
+        geolocator = Nominatim(user_agent="waste_bounty_location_suggest")
+        results = geolocator.geocode(q, language='en', addressdetails=True, exactly_one=False, limit=20)
+        suggestions_set: Set[str] = set()
+        ql = q.lower()
+
+        def maybe_add(name: Optional[str]):
+            if not name:
+                return
+            name = str(name)
+            if name.lower().startswith(ql):
+                suggestions_set.add(name)
+
+        if results:
+            for r in results:
+                addr = getattr(r, 'raw', {}).get('address', {})
+                if kind == 'country':
+                    maybe_add(addr.get('country'))
+                elif kind == 'state':
+                    maybe_add(addr.get('state'))
+                    maybe_add(addr.get('region'))
+                    maybe_add(addr.get('province'))
+                elif kind == 'district':
+                    maybe_add(addr.get('district'))
+                    maybe_add(addr.get('county'))
+                    maybe_add(addr.get('state_district'))
+                else:  # city
+                    maybe_add(addr.get('city'))
+                    maybe_add(addr.get('town'))
+                    maybe_add(addr.get('village'))
+                    maybe_add(addr.get('municipality'))
+
+        suggestions = sorted(suggestions_set)[:15]
+        return jsonify({"suggestions": suggestions}), 200
+    except Exception as e:
+        print(f"Location suggest error: {str(e)}")
+        return jsonify({"suggestions": []}), 200
 
 
 @app.route('/api/login', methods=['POST'])
