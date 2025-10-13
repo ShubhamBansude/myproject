@@ -13,6 +13,7 @@ from flask_cors import CORS
 import bcrypt
 import queue
 from collections import defaultdict
+import random
 
 # Image processing
 import cv2
@@ -883,6 +884,58 @@ def init_db() -> None:
 				')'
 			)
 		)
+		# Clan system tables
+		# Clans table stores one clan per city context; 4-digit join code per city
+		conn.execute(
+			(
+				'CREATE TABLE IF NOT EXISTS clans ('
+				'  id INTEGER PRIMARY KEY AUTOINCREMENT,'
+				'  name TEXT NOT NULL,'
+				'  description TEXT,'
+				'  country TEXT NOT NULL,'
+				'  state TEXT NOT NULL,'
+				'  city TEXT NOT NULL,'
+				'  join_code TEXT NOT NULL,'
+				'  leader_user_id INTEGER NOT NULL,'
+				'  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,'
+				'  UNIQUE(city, join_code),'
+				'  FOREIGN KEY(leader_user_id) REFERENCES users(id)'
+				')'
+			)
+		)
+		# Clan members table links users to clans; a user may be in at most one clan
+		conn.execute(
+			(
+				'CREATE TABLE IF NOT EXISTS clan_members ('
+				'  clan_id INTEGER NOT NULL,'
+				'  user_id INTEGER NOT NULL,'
+				'  role TEXT NOT NULL DEFAULT "member",'
+				'  joined_at DATETIME DEFAULT CURRENT_TIMESTAMP,'
+				'  PRIMARY KEY (clan_id, user_id),'
+				'  UNIQUE(user_id),'
+				'  FOREIGN KEY(clan_id) REFERENCES clans(id),'
+				'  FOREIGN KEY(user_id) REFERENCES users(id)'
+				')'
+			)
+		)
+		# Clan chat messages; visible to members of the clan (and must be same city)
+		conn.execute(
+			(
+				'CREATE TABLE IF NOT EXISTS clan_chat_messages ('
+				'  id INTEGER PRIMARY KEY AUTOINCREMENT, '
+				'  clan_id INTEGER NOT NULL, '
+				'  sender_user_id INTEGER NOT NULL, '
+				'  message TEXT NOT NULL, '
+				'  created_at DATETIME DEFAULT CURRENT_TIMESTAMP, '
+				'  deleted_at DATETIME, '
+				'  deleted_by_user_id INTEGER, '
+				'  FOREIGN KEY(clan_id) REFERENCES clans(id), '
+				'  FOREIGN KEY(sender_user_id) REFERENCES users(id), '
+				'  FOREIGN KEY(deleted_by_user_id) REFERENCES users(id) '
+				')'
+			)
+		)
+		conn.execute('CREATE INDEX IF NOT EXISTS idx_clan_chat_clan_id ON clan_chat_messages(clan_id)')
 		conn.commit()
 
 
@@ -947,6 +1000,27 @@ def notify_user(recipient_username: str, payload: Dict[str, Any]) -> None:
                 pass
     except Exception as e:
         print(f"notify_user error: {e}")
+
+
+def generate_four_digit_code() -> str:
+    """Generate a zero-padded 4-digit numeric code as string."""
+    return f"{random.randint(0, 9999):04d}"
+
+
+def generate_unique_join_code(conn: Connection, city: str) -> str:
+    """Generate a unique 4-digit join code for a given city."""
+    attempts_remaining = 50
+    while attempts_remaining > 0:
+        code = generate_four_digit_code()
+        row = conn.execute(
+            'SELECT 1 FROM clans WHERE TRIM(LOWER(city)) = TRIM(LOWER(?)) AND join_code = ? LIMIT 1',
+            (city, code),
+        ).fetchone()
+        if row is None:
+            return code
+        attempts_remaining -= 1
+    # In extremely rare case of collisions, fall back to timestamp-based suffix
+    return str(int(time.time()))[-4:]
 
 
 @app.route('/api/health', methods=['GET'])
@@ -1062,6 +1136,322 @@ def login() -> Tuple[Any, int]:
 	token = f"token_{row[0]}"
 
 	return jsonify({"user": user, "token": token}), 200
+
+
+# =============================
+# Clan System Endpoints
+# =============================
+
+
+def _get_authenticated_user(conn: Connection, username: str) -> Optional[sqlite3.Row]:
+    return conn.execute(
+        'SELECT id, username, country, state, city, total_points FROM users WHERE username = ?',
+        (username,),
+    ).fetchone()
+
+
+@app.route('/api/clans/create', methods=['POST'])
+def clan_create() -> Tuple[Any, int]:
+    """Create a clan in the user's city and auto-join as leader."""
+    username = parse_username_from_auth()
+    if not username:
+        return jsonify({"error": "unauthorized"}), 401
+
+    data = request.get_json(silent=True) or {}
+    name = (data.get('name') or '').strip()
+    description = (data.get('description') or '').strip()
+    if not name:
+        return jsonify({"error": "name is required"}), 400
+
+    with get_db_connection() as conn:
+        u = _get_authenticated_user(conn, username)
+        if u is None:
+            return jsonify({"error": "user not found"}), 404
+        user_id = int(u[0])
+        country, state, city = str(u[2]), str(u[3]), str(u[4])
+
+        # A user may already be in a clan; prevent multi-membership
+        existing = conn.execute('SELECT clan_id FROM clan_members WHERE user_id = ?', (user_id,)).fetchone()
+        if existing is not None:
+            return jsonify({"error": "already in a clan"}), 400
+
+        join_code = generate_unique_join_code(conn, city)
+        cur = conn.execute(
+            'INSERT INTO clans (name, description, country, state, city, join_code, leader_user_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
+            (name, description, country, state, city, join_code, user_id)
+        )
+        clan_id = cur.lastrowid
+        conn.execute(
+            'INSERT INTO clan_members (clan_id, user_id, role) VALUES (?, ?, ?)',
+            (clan_id, user_id, 'leader')
+        )
+        conn.commit()
+
+        return jsonify({
+            "clan": {
+                "id": clan_id,
+                "name": name,
+                "description": description,
+                "city": city,
+                "join_code": join_code,
+                "leader_username": username,
+            }
+        }), 201
+
+
+@app.route('/api/clans/join', methods=['POST'])
+def clan_join() -> Tuple[Any, int]:
+    """Join a clan via 4-digit code; must match user's city."""
+    username = parse_username_from_auth()
+    if not username:
+        return jsonify({"error": "unauthorized"}), 401
+    data = request.get_json(silent=True) or {}
+    code = (data.get('code') or '').strip()
+    if not code or len(code) != 4 or not code.isdigit():
+        return jsonify({"error": "invalid code"}), 400
+    with get_db_connection() as conn:
+        u = _get_authenticated_user(conn, username)
+        if u is None:
+            return jsonify({"error": "user not found"}), 404
+        user_id = int(u[0])
+        city = str(u[4])
+
+        # Ensure not already in a clan
+        existing = conn.execute('SELECT clan_id FROM clan_members WHERE user_id = ?', (user_id,)).fetchone()
+        if existing is not None:
+            return jsonify({"error": "already in a clan"}), 400
+
+        clan = conn.execute(
+            'SELECT id, name, description, city FROM clans WHERE TRIM(LOWER(city)) = TRIM(LOWER(?)) AND join_code = ? LIMIT 1',
+            (city, code)
+        ).fetchone()
+        if clan is None:
+            return jsonify({"error": "clan not found in your city"}), 404
+        clan_id = int(clan[0])
+        conn.execute('INSERT OR IGNORE INTO clan_members (clan_id, user_id, role) VALUES (?, ?, ?)', (clan_id, user_id, 'member'))
+        conn.commit()
+        return jsonify({"message": "joined", "clan_id": clan_id}), 200
+
+
+@app.route('/api/clans/me', methods=['GET'])
+def clan_me() -> Tuple[Any, int]:
+    """Return user's clan info and members if any."""
+    username = parse_username_from_auth()
+    if not username:
+        return jsonify({"error": "unauthorized"}), 401
+    with get_db_connection() as conn:
+        u = _get_authenticated_user(conn, username)
+        if u is None:
+            return jsonify({"error": "user not found"}), 404
+        user_id = int(u[0])
+        row = conn.execute(
+            'SELECT c.id, c.name, c.description, c.city, c.join_code, u2.username as leader_username '
+            'FROM clan_members m JOIN clans c ON c.id = m.clan_id '
+            'JOIN users u2 ON u2.id = c.leader_user_id '
+            'WHERE m.user_id = ? LIMIT 1',
+            (user_id,)
+        ).fetchone()
+        if row is None:
+            return jsonify({"clan": None}), 200
+        clan_id = int(row[0])
+        members = conn.execute(
+            'SELECT u.username, u.total_points, m.role FROM clan_members m JOIN users u ON u.id = m.user_id WHERE m.clan_id = ? ORDER BY u.total_points DESC',
+            (clan_id,)
+        ).fetchall()
+        return jsonify({
+            "clan": {
+                "id": clan_id,
+                "name": row[1],
+                "description": row[2],
+                "city": row[3],
+                "join_code": row[4],
+                "leader_username": row[5],
+                "members": [
+                    {"username": r[0], "total_points": int(r[1]), "role": r[2]} for r in members
+                ],
+            }
+        }), 200
+
+
+@app.route('/api/clans/list', methods=['GET'])
+def clan_list() -> Tuple[Any, int]:
+    """List clans in the user's city with member counts and total points."""
+    username = parse_username_from_auth()
+    if not username:
+        return jsonify({"error": "unauthorized"}), 401
+    with get_db_connection() as conn:
+        u = _get_authenticated_user(conn, username)
+        if u is None:
+            return jsonify({"error": "user not found"}), 404
+        city = str(u[4])
+        rows = conn.execute(
+            'SELECT c.id, c.name, c.description, c.join_code, '
+            '  (SELECT COUNT(*) FROM clan_members cm WHERE cm.clan_id = c.id) as member_count, '
+            '  (SELECT COALESCE(SUM(u2.total_points),0) FROM clan_members cm2 JOIN users u2 ON u2.id = cm2.user_id WHERE cm2.clan_id = c.id) as clan_points '
+            'FROM clans c WHERE TRIM(LOWER(c.city)) = TRIM(LOWER(?)) '
+            'ORDER BY clan_points DESC, member_count DESC, c.id ASC',
+            (city,)
+        ).fetchall()
+        clans = [
+            {
+                "id": r[0],
+                "name": r[1],
+                "description": r[2],
+                "join_code": r[3],
+                "member_count": int(r[4] or 0),
+                "clan_points": int(r[5] or 0),
+            } for r in rows
+        ]
+        return jsonify({"clans": clans}), 200
+
+
+@app.route('/api/clans/leave', methods=['POST'])
+def clan_leave() -> Tuple[Any, int]:
+    """Leave current clan; if leader and others exist, prevent unless leadership transferred (MVP: prevent)."""
+    username = parse_username_from_auth()
+    if not username:
+        return jsonify({"error": "unauthorized"}), 401
+    with get_db_connection() as conn:
+        u = _get_authenticated_user(conn, username)
+        if u is None:
+            return jsonify({"error": "user not found"}), 404
+        user_id = int(u[0])
+        row = conn.execute('SELECT clan_id, role FROM clan_members WHERE user_id = ?', (user_id,)).fetchone()
+        if row is None:
+            return jsonify({"message": "not in a clan"}), 200
+        clan_id, role = int(row[0]), str(row[1])
+        if role == 'leader':
+            count_row = conn.execute('SELECT COUNT(*) FROM clan_members WHERE clan_id = ?', (clan_id,)).fetchone()
+            if int(count_row[0]) > 1:
+                return jsonify({"error": "leader cannot leave while members exist"}), 400
+            # If sole member, delete clan and membership
+            conn.execute('DELETE FROM clan_members WHERE clan_id = ?', (clan_id,))
+            conn.execute('DELETE FROM clans WHERE id = ?', (clan_id,))
+        else:
+            conn.execute('DELETE FROM clan_members WHERE clan_id = ? AND user_id = ?', (clan_id, user_id))
+        conn.commit()
+        return jsonify({"message": "left"}), 200
+
+
+@app.route('/api/clans/kick', methods=['POST'])
+def clan_kick() -> Tuple[Any, int]:
+    """Leader-only: kick a user from the clan by username."""
+    username = parse_username_from_auth()
+    if not username:
+        return jsonify({"error": "unauthorized"}), 401
+    data = request.get_json(silent=True) or {}
+    target_username = (data.get('username') or '').strip()
+    if not target_username:
+        return jsonify({"error": "username is required"}), 400
+    with get_db_connection() as conn:
+        u = _get_authenticated_user(conn, username)
+        if u is None:
+            return jsonify({"error": "user not found"}), 404
+        user_id = int(u[0])
+        leader_row = conn.execute('SELECT clan_id, role FROM clan_members WHERE user_id = ?', (user_id,)).fetchone()
+        if leader_row is None or str(leader_row[1]) != 'leader':
+            return jsonify({"error": "only leader can kick"}), 403
+        clan_id = int(leader_row[0])
+        trow = conn.execute('SELECT id FROM users WHERE username = ?', (target_username,)).fetchone()
+        if trow is None:
+            return jsonify({"error": "target user not found"}), 404
+        target_user_id = int(trow[0])
+        # Ensure target is in same clan and not the leader
+        mem = conn.execute('SELECT role FROM clan_members WHERE clan_id = ? AND user_id = ?', (clan_id, target_user_id)).fetchone()
+        if mem is None:
+            return jsonify({"error": "user not in your clan"}), 400
+        if str(mem[0]) == 'leader':
+            return jsonify({"error": "cannot kick leader"}), 400
+        conn.execute('DELETE FROM clan_members WHERE clan_id = ? AND user_id = ?', (clan_id, target_user_id))
+        conn.commit()
+        return jsonify({"message": "kicked"}), 200
+
+
+@app.route('/api/clans/chat', methods=['GET'])
+def clan_chat_get() -> Tuple[Any, int]:
+    """Get chat messages for current user's clan."""
+    username = parse_username_from_auth()
+    if not username:
+        return jsonify({"error": "unauthorized"}), 401
+    with get_db_connection() as conn:
+        u = _get_authenticated_user(conn, username)
+        if u is None:
+            return jsonify({"error": "user not found"}), 404
+        user_id = int(u[0])
+        row = conn.execute('SELECT clan_id FROM clan_members WHERE user_id = ?', (user_id,)).fetchone()
+        if row is None:
+            return jsonify({"error": "not in a clan"}), 400
+        clan_id = int(row[0])
+        msgs = conn.execute(
+            'SELECT m.id, u.username, m.message, m.created_at FROM clan_chat_messages m JOIN users u ON u.id = m.sender_user_id WHERE m.clan_id = ? AND m.deleted_at IS NULL ORDER BY m.id ASC',
+            (clan_id,)
+        ).fetchall()
+        return jsonify({
+            "messages": [
+                {"id": r[0], "sender_username": r[1], "message": r[2], "created_at": r[3]} for r in msgs
+            ]
+        }), 200
+
+
+@app.route('/api/clans/chat', methods=['POST'])
+def clan_chat_post() -> Tuple[Any, int]:
+    """Post a chat message to the user's clan."""
+    username = parse_username_from_auth()
+    if not username:
+        return jsonify({"error": "unauthorized"}), 401
+    data = request.get_json(silent=True) or {}
+    message_text = (data.get('message') or '').strip()
+    if not message_text:
+        return jsonify({"error": "message is required"}), 400
+    with get_db_connection() as conn:
+        u = _get_authenticated_user(conn, username)
+        if u is None:
+            return jsonify({"error": "user not found"}), 404
+        user_id = int(u[0])
+        row = conn.execute('SELECT clan_id FROM clan_members WHERE user_id = ?', (user_id,)).fetchone()
+        if row is None:
+            return jsonify({"error": "not in a clan"}), 400
+        clan_id = int(row[0])
+        cur = conn.execute(
+            'INSERT INTO clan_chat_messages (clan_id, sender_user_id, message) VALUES (?, ?, ?)',
+            (clan_id, user_id, message_text)
+        )
+        msg_id = cur.lastrowid
+        conn.commit()
+        row = conn.execute('SELECT ? as username, message, created_at FROM clan_chat_messages WHERE id = ?', (username, msg_id)).fetchone()
+        return jsonify({
+            "message": {"id": msg_id, "sender_username": username, "message": str(row[1]), "created_at": row[2]}
+        }), 201
+
+
+@app.route('/api/clans/chat/<int:message_id>', methods=['DELETE'])
+def clan_chat_delete(message_id: int) -> Tuple[Any, int]:
+    """Delete a chat message; allowed for leader or message sender."""
+    username = parse_username_from_auth()
+    if not username:
+        return jsonify({"error": "unauthorized"}), 401
+    with get_db_connection() as conn:
+        u = _get_authenticated_user(conn, username)
+        if u is None:
+            return jsonify({"error": "user not found"}), 404
+        user_id = int(u[0])
+        # Determine user's clan and role
+        mrow = conn.execute('SELECT clan_id, role FROM clan_members WHERE user_id = ?', (user_id,)).fetchone()
+        if mrow is None:
+            return jsonify({"error": "not in a clan"}), 400
+        clan_id, my_role = int(mrow[0]), str(mrow[1])
+        row = conn.execute(
+            'SELECT sender_user_id FROM clan_chat_messages WHERE id = ? AND clan_id = ? AND deleted_at IS NULL',
+            (message_id, clan_id)
+        ).fetchone()
+        if row is None:
+            return jsonify({"error": "message not found"}), 404
+        sender_user_id = int(row[0])
+        if my_role != 'leader' and sender_user_id != user_id:
+            return jsonify({"error": "forbidden"}), 403
+        conn.execute('UPDATE clan_chat_messages SET deleted_at = CURRENT_TIMESTAMP, deleted_by_user_id = ? WHERE id = ?', (user_id, message_id))
+        conn.commit()
+        return jsonify({"message": "deleted"}), 200
 
 @app.route('/api/me', methods=['GET'])
 def me() -> Tuple[Any, int]:
@@ -2326,6 +2716,70 @@ def get_stats() -> Tuple[Any, int]:
 		spent = int(spent_row[0]) if spent_row else 0
 		lifetime_points = total_now + spent
 	return jsonify({"detections": detections, "redemptions": redemptions, "lifetime_points": lifetime_points}), 200
+
+
+# =============================
+# Leaderboard Endpoints
+# =============================
+
+
+@app.route('/api/leaderboard/users', methods=['GET'])
+def leaderboard_users() -> Tuple[Any, int]:
+    """Top users by points within the current user's city."""
+    username = parse_username_from_auth()
+    if not username:
+        return jsonify({"error": "unauthorized"}), 401
+    limit = int(request.args.get('limit', '10'))
+    if limit < 1 or limit > 100:
+        limit = 10
+    with get_db_connection() as conn:
+        u = conn.execute('SELECT city FROM users WHERE username = ?', (username,)).fetchone()
+        if u is None:
+            return jsonify({"error": "user not found"}), 404
+        city = str(u[0])
+        rows = conn.execute(
+            'SELECT username, total_points FROM users WHERE TRIM(LOWER(city)) = TRIM(LOWER(?)) ORDER BY total_points DESC, username ASC LIMIT ?',
+            (city, limit)
+        ).fetchall()
+        return jsonify({
+            "city": city,
+            "users": [{"username": r[0], "total_points": int(r[1])} for r in rows]
+        }), 200
+
+
+@app.route('/api/leaderboard/clans', methods=['GET'])
+def leaderboard_clans() -> Tuple[Any, int]:
+    """Top clans by aggregate member points within the current user's city."""
+    username = parse_username_from_auth()
+    if not username:
+        return jsonify({"error": "unauthorized"}), 401
+    limit = int(request.args.get('limit', '10'))
+    if limit < 1 or limit > 100:
+        limit = 10
+    with get_db_connection() as conn:
+        u = conn.execute('SELECT city FROM users WHERE username = ?', (username,)).fetchone()
+        if u is None:
+            return jsonify({"error": "user not found"}), 404
+        city = str(u[0])
+        rows = conn.execute(
+            'SELECT c.id, c.name, '
+            '  (SELECT COALESCE(SUM(u2.total_points),0) FROM clan_members cm JOIN users u2 ON u2.id = cm.user_id WHERE cm.clan_id = c.id) as clan_points, '
+            '  (SELECT COUNT(*) FROM clan_members cm2 WHERE cm2.clan_id = c.id) as member_count '
+            'FROM clans c WHERE TRIM(LOWER(c.city)) = TRIM(LOWER(?)) '
+            'ORDER BY clan_points DESC, member_count DESC, c.id ASC LIMIT ?',
+            (city, limit)
+        ).fetchall()
+        return jsonify({
+            "city": city,
+            "clans": [
+                {
+                    "id": r[0],
+                    "name": r[1],
+                    "clan_points": int(r[2] or 0),
+                    "member_count": int(r[3] or 0),
+                } for r in rows
+            ]
+        }), 200
 
 
 if __name__ == '__main__':
