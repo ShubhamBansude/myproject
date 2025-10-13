@@ -315,7 +315,7 @@ const EarnPoints = ({ currentUser, updatePoints }) => {
                                     : 'bg-eco-green text-white hover:brightness-110'
                             }`}
                         >
-                            {loading ? 'Analyzing...' : 'Analyze & Earn'}
+                            {loading ? 'Running Waste Detection...' : 'Analyze & Earn'}
                         </button>
                         
                         {detectionResult && !detailedAnalysis && (
