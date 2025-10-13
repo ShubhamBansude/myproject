@@ -74,6 +74,10 @@ const ProfileView = ({ user }) => {
         <div className="text-gray-100 text-xl font-semibold">{user.username}</div>
       </div>
       <div className="rounded-xl bg-white/5 border border-white/10 p-4">
+        <div className="text-gray-400 text-sm">Email</div>
+        <div className="text-gray-100 text-xl font-semibold">{user.email || '—'}</div>
+      </div>
+      <div className="rounded-xl bg-white/5 border border-white/10 p-4">
         <div className="text-gray-400 text-sm">Total Points</div>
         <div className="text-gray-100 text-xl font-semibold">{user.total_points}</div>
       </div>
