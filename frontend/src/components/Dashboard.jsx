@@ -120,7 +120,9 @@ const Dashboard = ({ currentUser, onLogout, setCurrentUser }) => {
       const res = await fetch('http://localhost:5000/api/stats', { headers: { Authorization: `Bearer ${token}` } });
       const data = await res.json();
       if (res.ok) setStats({ detections: data.detections || 0, redemptions: data.redemptions || 0, lifetime_points: data.lifetime_points || 0 });
-    } catch {}
+    } catch {
+      // ignore network errors
+    }
   };
 
   useEffect(() => { fetchStats(); }, []);
@@ -140,7 +142,9 @@ const Dashboard = ({ currentUser, onLogout, setCurrentUser }) => {
           setNotifications(list);
           setUnreadCount(list.filter((n) => !n.read_at).length);
         }
-      } catch {}
+      } catch {
+        // ignore network errors
+      }
     };
     load();
   }, []);
@@ -167,15 +171,17 @@ const Dashboard = ({ currentUser, onLogout, setCurrentUser }) => {
           };
           setNotifications((prev) => [notif, ...prev]);
           setUnreadCount((c) => c + 1);
-        } catch {}
+        } catch {
+          // ignore malformed SSE message
+        }
       };
       es.onerror = () => {
         // Let the browser handle reconnection automatically
       };
       return () => {
-        try { es.close(); } catch {}
+        try { es.close(); } catch { /* noop */ }
       };
-    } catch {}
+    } catch { /* noop */ }
   }, []);
 
   const markAllNotificationsRead = async () => {
@@ -191,7 +197,7 @@ const Dashboard = ({ currentUser, onLogout, setCurrentUser }) => {
         setNotifications((prev) => prev.map((n) => (n.read_at ? n : { ...n, read_at: now })));
         setUnreadCount(0);
       }
-    } catch {}
+    } catch { /* noop */ }
   };
 
   const formatDateTime = (s) => {
@@ -230,7 +236,7 @@ const Dashboard = ({ currentUser, onLogout, setCurrentUser }) => {
 
   const progressA = 75;
   const progressB = 50;
-  const circlePct = 60;
+  // const circlePct = 60;
 
   return (
     <div className="relative min-h-screen font-sans bg-black">

@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 
-const EarnPoints = ({ currentUser, updatePoints }) => {
+const EarnPoints = ({ updatePoints }) => {
     const [file, setFile] = useState(null);
     const [previewUrl, setPreviewUrl] = useState(null);
     const [loading, setLoading] = useState(false);
@@ -108,7 +108,7 @@ const EarnPoints = ({ currentUser, updatePoints }) => {
             }
 
             setDetailedAnalysis(data);
-        } catch (e) {
+        } catch {
             setError('Network error. Please try again.');
         } finally {
             setDetailedLoading(false);
@@ -178,7 +178,7 @@ const EarnPoints = ({ currentUser, updatePoints }) => {
             if (typeof data.total_points === 'number') {
                 updatePoints(data.total_points);
             }
-        } catch (e) {
+        } catch {
             setError('Network error. Please try again.');
         } finally {
             setLoading(false);
