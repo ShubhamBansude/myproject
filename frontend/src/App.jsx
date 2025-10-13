@@ -1,9 +1,11 @@
 // src/App.jsx
 
-import React, { useState, useEffect } from 'react';
-import WelcomePage from './components/WelcomePage';
-import AuthGateway from './components/AuthGateway';
-import Dashboard from './components/Dashboard';
+import React, { useState, useEffect, lazy, Suspense } from 'react';
+
+// Lazy-load top-level routes for smaller initial bundle
+const WelcomePage = lazy(() => import('./components/WelcomePage'));
+const AuthGateway = lazy(() => import('./components/AuthGateway'));
+const Dashboard = lazy(() => import('./components/Dashboard'));
 
 function App() {
   // 'welcome' -> Landing Page
@@ -23,6 +25,26 @@ function App() {
       setView('dashboard');
     }
   }, []);
+
+  // Preload likely-next route chunks during idle time
+  useEffect(() => {
+    const runIdle = (cb) => {
+      if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
+        // @ts-ignore - requestIdleCallback is not in TS lib by default
+        window.requestIdleCallback(cb);
+      } else {
+        setTimeout(cb, 0);
+      }
+    };
+
+    runIdle(() => {
+      if (view === 'welcome') {
+        import('./components/AuthGateway');
+      } else if (view === 'auth') {
+        import('./components/Dashboard');
+      }
+    });
+  }, [view]);
 
   // Handler for successful login/signup
   const handleAuthSuccess = (userData, token) => {
@@ -57,7 +79,9 @@ function App() {
   
   return (
      <div className="min-h-screen w-screen bg-gray-50 font-sans antialiased">
-      {content}
+      <Suspense fallback={<div className="p-6 text-gray-500">Loading…</div>}>
+        {content}
+      </Suspense>
     </div>
   );
 }

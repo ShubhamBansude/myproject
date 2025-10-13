@@ -358,7 +358,7 @@ const EarnPoints = ({ currentUser, updatePoints }) => {
                     {loading && (
                          <div className="flex items-center space-x-2 text-eco-green">
                              <div className="w-4 h-4 border-t-2 border-eco-green rounded-full animate-spin"></div>
-                             <span>Analyzing with Gemini AI...</span>
+                             <span>Running Waste Detection...</span>
                          </div>
                     )}
                     

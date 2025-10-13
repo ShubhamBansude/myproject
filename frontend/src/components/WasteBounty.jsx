@@ -1,7 +1,15 @@
 // src/components/WasteBounty.jsx
 
 import React, { useState, useEffect } from 'react';
-import EXIF from 'exif-js';
+
+// Defer EXIF parsing library to reduce initial bundle size
+let EXIFLibPromise;
+const loadEXIF = async () => {
+  if (!EXIFLibPromise) {
+    EXIFLibPromise = import('exif-js');
+  }
+  return EXIFLibPromise.then(mod => mod.default || mod);
+};
 
 const WasteBounty = ({ currentUser, updatePoints }) => {
     const [activeTab, setActiveTab] = useState('report'); // 'report', 'bounties', 'cleanup'
@@ -88,34 +96,34 @@ const WasteBounty = ({ currentUser, updatePoints }) => {
     const validateGeotag = (file, photoSource = 'camera') => {
         return new Promise((resolve, reject) => {
             const reader = new FileReader();
-            reader.onload = (e) => {
+            reader.onload = async (e) => {
                 const img = new Image();
-                img.onload = () => {
-                    EXIF.getData(img, function() {
-                        const lat = EXIF.getTag(this, "GPSLatitude");
-                        const latRef = EXIF.getTag(this, "GPSLatitudeRef");
-                        const lon = EXIF.getTag(this, "GPSLongitude");
-                        const lonRef = EXIF.getTag(this, "GPSLongitudeRef");
-                        
-                        if (lat && latRef && lon && lonRef) {
-                            // Photo has GPS data
-                            resolve({ hasGPS: true, file: file });
-                        } else if (photoSource === 'gallery') {
-                            // For gallery photos without GPS, try to get current location
-                            getCurrentLocation()
-                                .then((location) => {
-                                    // For gallery photos, we'll let the backend handle GPS addition
-                                    // Just pass the original file and location data
-                                    resolve({ hasGPS: false, file: file, location: location });
-                                })
-                                .catch((error) => {
-                                    reject(new Error('Gallery photo has no GPS data and current location is unavailable. Please take a new photo with camera or enable location services.'));
-                                });
-                        } else {
-                            // Camera photo without GPS
-                            reject(new Error('📸 Camera photo must have GPS data. Please enable location services and take a new photo, or choose from gallery instead.'));
-                        }
-                    });
+                img.onload = async () => {
+                    try {
+                        const EXIF = await loadEXIF();
+                        EXIF.getData(img, function() {
+                            const lat = EXIF.getTag(this, "GPSLatitude");
+                            const latRef = EXIF.getTag(this, "GPSLatitudeRef");
+                            const lon = EXIF.getTag(this, "GPSLongitude");
+                            const lonRef = EXIF.getTag(this, "GPSLongitudeRef");
+                            
+                            if (lat && latRef && lon && lonRef) {
+                                resolve({ hasGPS: true, file: file });
+                            } else if (photoSource === 'gallery') {
+                                getCurrentLocation()
+                                    .then((location) => {
+                                        resolve({ hasGPS: false, file: file, location: location });
+                                    })
+                                    .catch(() => {
+                                        reject(new Error('Gallery photo has no GPS data and current location is unavailable. Please take a new photo with camera or enable location services.'));
+                                    });
+                            } else {
+                                reject(new Error('📸 Camera photo must have GPS data. Please enable location services and take a new photo, or choose from gallery instead.'));
+                            }
+                        });
+                    } catch (ex) {
+                        reject(new Error('Failed to load EXIF parser. Please try again.'));
+                    }
                 };
                 img.src = e.target.result;
             };
@@ -587,6 +595,8 @@ const WasteBounty = ({ currentUser, updatePoints }) => {
                                                 src={`http://localhost:5000${bounty.waste_image_url}`}
                                                 alt="Waste spot"
                                                 className="w-20 h-20 object-cover rounded-lg"
+                                                loading="lazy"
+                                                decoding="async"
                                             />
                                         </div>
                                     </div>
