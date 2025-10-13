@@ -1,6 +1,7 @@
 // src/components/AuthGateway.jsx
 
 import React, { useMemo, useState } from 'react';
+import { Country, State, City } from 'country-state-city';
 
 const Login = ({ onLoginSuccess }) => {
     const [username, setUsername] = useState('');
@@ -63,12 +64,14 @@ const Login = ({ onLoginSuccess }) => {
 
 
 // Lightweight auto-suggest input for locations
-const AutoSuggestInput = ({ label, placeholder, value, onChange, suggestions, inputProps = {} }) => {
+const AutoSuggestInput = ({ label, placeholder, value, onChange, onSelect, suggestions, inputProps = {} }) => {
     const [open, setOpen] = useState(false);
     const filtered = useMemo(() => {
         const q = (value || '').toLowerCase();
         if (q.length < 2) return [];
-        return suggestions.filter((s) => s.toLowerCase().includes(q)).slice(0, 8);
+        return suggestions
+            .filter((s) => s.toLowerCase().startsWith(q))
+            .slice(0, 10);
     }, [value, suggestions]);
 
     return (
@@ -91,7 +94,7 @@ const AutoSuggestInput = ({ label, placeholder, value, onChange, suggestions, in
                             key={idx}
                             type="button"
                             onMouseDown={(e) => e.preventDefault()}
-                            onClick={() => { onChange(s); setOpen(false); }}
+                            onClick={() => { (onSelect ? onSelect(s) : onChange(s)); setOpen(false); }}
                             className="w-full text-left px-3 py-2 text-sm text-gray-200 hover:bg-white/10"
                         >
                             {s}
@@ -103,22 +106,6 @@ const AutoSuggestInput = ({ label, placeholder, value, onChange, suggestions, in
     );
 };
 
-const COUNTRY_SUGGESTIONS = [
-    'India', 'Indonesia', 'United States', 'United Kingdom', 'United Arab Emirates', 'Canada', 'Australia', 'Germany', 'France', 'Japan', 'China', 'Brazil', 'South Africa', 'Singapore', 'Nigeria', 'Mexico', 'Italy', 'Spain', 'Netherlands', 'Sweden'
-];
-
-const STATE_SUGGESTIONS = [
-    // India (common)
-    'Maharashtra', 'Karnataka', 'Delhi', 'Tamil Nadu', 'Uttar Pradesh', 'Gujarat', 'West Bengal', 'Telangana', 'Rajasthan', 'Kerala', 'Madhya Pradesh', 'Punjab', 'Haryana', 'Bihar', 'Odisha', 'Chhattisgarh', 'Jharkhand', 'Assam', 'Uttarakhand', 'Himachal Pradesh', 'Goa',
-    // US (few examples)
-    'California', 'Texas', 'New York', 'Florida', 'Washington', 'Illinois'
-];
-
-const CITY_SUGGESTIONS = [
-    'Mumbai', 'Pune', 'Bengaluru', 'Delhi', 'Chennai', 'Hyderabad', 'Kolkata', 'Ahmedabad', 'Jaipur', 'Kochi', 'Nagpur', 'Nashik', 'Indore', 'Bhopal', 'Surat', 'Thane', 'Lucknow', 'Kanpur', 'Noida', 'Gurugram',
-    'San Francisco', 'New York', 'Los Angeles', 'Seattle', 'Chicago'
-];
-
 const DISTRICT_SUGGESTIONS = [
     'Pune', 'Mumbai Suburban', 'Bengaluru Urban', 'Delhi', 'Chennai', 'Hyderabad', 'Kolkata', 'Ahmedabad', 'Jaipur', 'Thane', 'Nagpur'
 ];
@@ -128,18 +115,46 @@ const Signup = ({ onSignupSuccess }) => {
     const [password, setPassword] = useState('');
     const [confirmPassword, setConfirmPassword] = useState('');
     const [country, setCountry] = useState('');
-    const [state, setState] = useState('');
+    const [region, setRegion] = useState(''); // state/province name
     const [city, setCity] = useState('');
     const [district, setDistrict] = useState('');
+    const [selectedCountry, setSelectedCountry] = useState(null);
+    const [selectedStateObj, setSelectedStateObj] = useState(null);
     const [showPassword, setShowPassword] = useState(false);
     const [showConfirmPassword, setShowConfirmPassword] = useState(false);
     const [error, setError] = useState(null);
+
+    // Dynamic suggestions from country-state-city
+    const allCountries = useMemo(() => Country.getAllCountries(), []);
+    const countryNames = useMemo(() => allCountries.map(c => c.name), [allCountries]);
+    const countryByName = useMemo(() => {
+        const map = Object.create(null);
+        for (const c of allCountries) map[c.name] = c;
+        return map;
+    }, [allCountries]);
+
+    const statesForCountry = useMemo(() => {
+        if (!selectedCountry) return [];
+        return State.getStatesOfCountry(selectedCountry.isoCode);
+    }, [selectedCountry]);
+    const stateNames = useMemo(() => statesForCountry.map(s => s.name), [statesForCountry]);
+    const stateByName = useMemo(() => {
+        const map = Object.create(null);
+        for (const s of statesForCountry) map[s.name] = s;
+        return map;
+    }, [statesForCountry]);
+
+    const citiesForState = useMemo(() => {
+        if (!selectedCountry || !selectedStateObj) return [];
+        return City.getCitiesOfState(selectedCountry.isoCode, selectedStateObj.isoCode);
+    }, [selectedCountry, selectedStateObj]);
+    const cityNames = useMemo(() => citiesForState.map(c => c.name), [citiesForState]);
 
     const handleSubmit = async (e) => {
         e.preventDefault();
         setError(null);
 
-        if (!username.trim() || !password.trim() || !confirmPassword.trim() || !country.trim() || !state.trim() || !city.trim() || !district.trim()) {
+        if (!username.trim() || !password.trim() || !confirmPassword.trim() || !country.trim() || !region.trim() || !city.trim() || !district.trim()) {
             setError('Please fill all fields.');
             return;
         }
@@ -156,7 +171,7 @@ const Signup = ({ onSignupSuccess }) => {
                     username: username.trim(), 
                     password: password.trim(),
                     country: country.trim(),
-                    state: state.trim(),
+                    state: region.trim(),
                     city: city.trim(),
                     district: district.trim()
                 })
@@ -201,9 +216,53 @@ const Signup = ({ onSignupSuccess }) => {
                     {showConfirmPassword ? '🙈' : '👁️'}
                 </button>
             </div>
-            <AutoSuggestInput label="Country" placeholder="Country name" value={country} onChange={setCountry} suggestions={COUNTRY_SUGGESTIONS} />
-            <AutoSuggestInput label="State/Province" placeholder="State name" value={state} onChange={setState} suggestions={STATE_SUGGESTIONS} />
-            <AutoSuggestInput label="City" placeholder="City name" value={city} onChange={setCity} suggestions={CITY_SUGGESTIONS} />
+            <AutoSuggestInput 
+                label="Country" 
+                placeholder="Country name" 
+                value={country} 
+                onChange={(val) => { 
+                    setCountry(val); 
+                    setSelectedCountry(null); 
+                    setRegion('');
+                    setSelectedStateObj(null);
+                    setCity('');
+                }} 
+                onSelect={(name) => { 
+                    setCountry(name); 
+                    const c = countryByName[name] || null; 
+                    setSelectedCountry(c);
+                    setRegion('');
+                    setSelectedStateObj(null);
+                    setCity('');
+                }}
+                suggestions={countryNames} 
+            />
+            <AutoSuggestInput 
+                label="State/Province" 
+                placeholder="State name" 
+                value={region} 
+                onChange={(val) => { 
+                    setRegion(val);
+                    setSelectedStateObj(null);
+                    setCity('');
+                }} 
+                onSelect={(name) => { 
+                    setRegion(name); 
+                    const s = stateByName[name] || null; 
+                    setSelectedStateObj(s);
+                    setCity('');
+                }}
+                suggestions={stateNames} 
+                inputProps={{ disabled: !selectedCountry }}
+            />
+            <AutoSuggestInput 
+                label="City" 
+                placeholder="City name" 
+                value={city} 
+                onChange={setCity} 
+                suggestions={cityNames} 
+                inputProps={{ disabled: !selectedStateObj }}
+            />
             <AutoSuggestInput label="District" placeholder="District name" value={district} onChange={setDistrict} suggestions={DISTRICT_SUGGESTIONS} />
             {error && <div className="text-red-400 text-sm bg-red-500/10 border border-red-500/30 rounded-lg p-2">{error}</div>}
             <button type="submit" className="w-full py-3 bg-eco-accent text-eco-dark font-semibold rounded-xl hover:brightness-110 transition duration-300 shadow-[0_8px_30px_rgba(245,158,11,0.25)]">
