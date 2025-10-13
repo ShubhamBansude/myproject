@@ -736,7 +736,8 @@ def init_db() -> None:
 				'  last_awarded_signature TEXT,'
 				'  country TEXT NOT NULL,'
 				'  state TEXT NOT NULL,'
-				'  city TEXT NOT NULL'
+				'  city TEXT NOT NULL,'
+				'  district TEXT NOT NULL DEFAULT "Unknown"'
 				')'
 			)
 		)
@@ -745,13 +746,16 @@ def init_db() -> None:
 		cursor = conn.execute("PRAGMA table_info(users)")
 		columns = [column[1] for column in cursor.fetchall()]
 		
+		# Backfill legacy schemas missing any of these columns
 		if 'country' not in columns:
-			print("Adding location columns to existing users table...")
 			conn.execute('ALTER TABLE users ADD COLUMN country TEXT DEFAULT "Unknown"')
+		if 'state' not in columns:
 			conn.execute('ALTER TABLE users ADD COLUMN state TEXT DEFAULT "Unknown"')
+		if 'city' not in columns:
 			conn.execute('ALTER TABLE users ADD COLUMN city TEXT DEFAULT "Unknown"')
-			conn.commit()
-			print("Location columns added successfully")
+		if 'district' not in columns:
+			conn.execute('ALTER TABLE users ADD COLUMN district TEXT DEFAULT "Unknown"')
+		conn.commit()
 		# Coupons table
 		conn.execute(
 			(
