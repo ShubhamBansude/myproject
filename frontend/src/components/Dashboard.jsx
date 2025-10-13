@@ -1,6 +1,6 @@
 // src/components/Dashboard.jsx
 
-import React, { useState, useEffect, lazy, Suspense } from 'react';
+import React, { useState, useEffect, lazy, Suspense, useRef } from 'react';
 
 // Lazy-load heavy tab panels to split Dashboard chunk
 const EarnPoints = lazy(() => import('./EarnPoints'));
@@ -105,6 +105,10 @@ const ProfileView = ({ user }) => {
 const Dashboard = ({ currentUser, onLogout, setCurrentUser }) => {
   const [activeTab, setActiveTab] = useState('detection');
   const [stats, setStats] = useState({ detections: 0, redemptions: 0, lifetime_points: 0 });
+  const [notifications, setNotifications] = useState([]);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const [notifOpen, setNotifOpen] = useState(false);
+  const eventSourceRef = useRef(null);
 
   const fetchStats = async () => {
     const token = localStorage.getItem('authToken');
@@ -116,6 +120,86 @@ const Dashboard = ({ currentUser, onLogout, setCurrentUser }) => {
   };
 
   useEffect(() => { fetchStats(); }, []);
+
+  // Load stored notifications on login/mount
+  useEffect(() => {
+    const token = localStorage.getItem('authToken');
+    if (!token) return;
+    const load = async () => {
+      try {
+        const res = await fetch('http://localhost:5000/api/notifications', {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const data = await res.json();
+        if (res.ok) {
+          const list = Array.isArray(data.notifications) ? data.notifications : [];
+          setNotifications(list);
+          setUnreadCount(list.filter((n) => !n.read_at).length);
+        }
+      } catch {}
+    };
+    load();
+  }, []);
+
+  // Subscribe to real-time notifications via SSE
+  useEffect(() => {
+    const token = localStorage.getItem('authToken');
+    if (!token) return;
+    try {
+      const es = new EventSource(`http://localhost:5000/api/notifications/stream?token=${encodeURIComponent(token)}`);
+      eventSourceRef.current = es;
+      es.onmessage = (evt) => {
+        try {
+          const payload = JSON.parse(evt.data);
+          const notif = {
+            id: payload.id || `temp_${Date.now()}`,
+            type: payload.type,
+            title: payload.title,
+            message: payload.message,
+            city: payload.city || '',
+            payload: payload.payload || null,
+            created_at: payload.created_at || new Date().toISOString().slice(0, 19).replace('T', ' '),
+            read_at: null,
+          };
+          setNotifications((prev) => [notif, ...prev]);
+          setUnreadCount((c) => c + 1);
+        } catch {}
+      };
+      es.onerror = () => {
+        // Let the browser handle reconnection automatically
+      };
+      return () => {
+        try { es.close(); } catch {}
+      };
+    } catch {}
+  }, []);
+
+  const markAllNotificationsRead = async () => {
+    const token = localStorage.getItem('authToken');
+    try {
+      const res = await fetch('http://localhost:5000/api/notifications/read', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ all: true }),
+      });
+      if (res.ok) {
+        const now = new Date().toISOString().slice(0, 19).replace('T', ' ');
+        setNotifications((prev) => prev.map((n) => (n.read_at ? n : { ...n, read_at: now })));
+        setUnreadCount(0);
+      }
+    } catch {}
+  };
+
+  const formatDateTime = (s) => {
+    if (!s) return '';
+    // s is typically 'YYYY-MM-DD HH:MM:SS'
+    try {
+      const asIso = s.includes('T') ? s : s.replace(' ', 'T') + 'Z';
+      return new Date(asIso).toLocaleString();
+    } catch {
+      return s;
+    }
+  };
 
   const updatePoints = (newPoints, redeemed = false) => {
     setCurrentUser(prev => ({ ...prev, total_points: newPoints }));
@@ -160,7 +244,50 @@ const Dashboard = ({ currentUser, onLogout, setCurrentUser }) => {
             <span className="text-white font-extrabold text-xl font-display">Waste</span>
             <span className="text-eco-green font-extrabold text-xl font-display">Rewards</span>
           </div>
-          <div className="flex items-center gap-3 text-sm">
+          <div className="flex items-center gap-3 text-sm relative">
+            {/* Notification bell placed to the left of the username */}
+            <div className="relative">
+              <button
+                onClick={() => setNotifOpen((o) => !o)}
+                className="px-3 py-1 rounded-lg border border-white/10 bg-white/5 text-gray-200 hover:bg-white/10 transition relative"
+                aria-label="Notifications"
+              >
+                🔔
+                {unreadCount > 0 && (
+                  <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 rounded-full bg-eco-accent text-eco-dark text-[10px] font-bold flex items-center justify-center border border-amber-300/50">
+                    {unreadCount}
+                  </span>
+                )}
+              </button>
+              {notifOpen && (
+                <div className="absolute right-0 mt-2 w-80 max-h-96 overflow-auto bg-[#0b1220] border border-white/10 rounded-xl shadow-2xl z-30">
+                  <div className="flex items-center justify-between p-3 border-b border-white/10">
+                    <div className="text-gray-200 font-semibold text-sm">Notifications</div>
+                    <button onClick={markAllNotificationsRead} className="text-xs text-eco-green hover:underline">
+                      Mark all read
+                    </button>
+                  </div>
+                  <div className="divide-y divide-white/10">
+                    {notifications.length === 0 ? (
+                      <div className="p-3 text-gray-400 text-sm">No notifications</div>
+                    ) : (
+                      notifications.map((n) => (
+                        <div key={n.id || Math.random()} className="p-3 hover:bg-white/5">
+                          <div className="flex items-start justify-between">
+                            <div>
+                              <div className="text-gray-100 text-sm font-medium">{n.title}</div>
+                              <div className="text-gray-300 text-xs">{n.message}</div>
+                              <div className="text-gray-500 text-[11px] mt-1">{formatDateTime(n.created_at)}</div>
+                            </div>
+                            {!n.read_at && <span className="ml-2 mt-1 w-2 h-2 rounded-full bg-eco-green inline-block" />}
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
             <span className="px-3 py-1 rounded-full bg-white/5 border border-white/10 text-gray-200">{currentUser.username}</span>
             <span className="px-3 py-1 rounded-full bg-eco-green/20 text-eco-green border border-eco-green/30">{currentUser.total_points} pts</span>
             <button onClick={onLogout} className="px-3 py-1 rounded-lg border border-red-400/40 text-red-200 hover:bg-red-900/40 transition">Logout</button>
