@@ -19,7 +19,7 @@ This document explains how the app works end‑to‑end, what each part does, an
 
 ## 2) Data Model (SQLite)
 
-- `users(id, username, password_hash, total_points, last_awarded_signature)`
+- `users(id, username, password_hash, total_points, last_awarded_signature, country, state, city, district)`
 - `coupons(id, name, points_cost, coupon_code, description, is_active)`
 - `transactions(id, user_id, points_change, reason, created_at)`
 - `stats(id=1, detections, redemptions)` — global counters
@@ -30,8 +30,9 @@ Notes:
 
 ## 3) Backend Endpoints
 
-- `POST /api/signup { username, password }` → `{ user, token }`
-- `POST /api/login { username, password }` → `{ user, token }`
+- `POST /api/signup { username, password, country, state, city, district? }` → `{ user, token }`
+- `POST /api/login { username, password }` → `{ user:{ username, total_points, country, state, city }, token }`
+- `GET /api/me` → `{ user:{ username, total_points, country, state, city, district } }`
 - `POST /api/detect` (form-data: `file`, header `Authorization: Bearer token_...`)
   - Runs YOLO, calculates points:
     - Recyclable/Hazardous: `100 × unique items`
