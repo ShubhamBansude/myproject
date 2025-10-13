@@ -8,9 +8,11 @@ import json
 import hashlib
 import time
 
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
 import bcrypt
+import queue
+from collections import defaultdict
 
 # Image processing
 import cv2
@@ -838,9 +840,32 @@ def init_db() -> None:
 			conn.execute('ALTER TABLE waste_bounty ADD COLUMN after_image_url TEXT')
 		conn.commit()
 
+		# Notifications table
+		conn.execute(
+			(
+				'CREATE TABLE IF NOT EXISTS notifications ('
+				'  id INTEGER PRIMARY KEY AUTOINCREMENT,'
+				'  user_id INTEGER NOT NULL,'
+				'  type TEXT NOT NULL,'
+				'  title TEXT NOT NULL,'
+				'  message TEXT NOT NULL,'
+				'  city TEXT,'
+				'  payload TEXT,'
+				'  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,'
+				'  read_at DATETIME,'
+				'  FOREIGN KEY(user_id) REFERENCES users(id)'
+				')'
+			)
+		)
+		conn.commit()
+
 
 app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": "*"}})
+
+# In-memory subscriber registry for SSE notification streams
+# Maps username -> set of Queue instances
+notification_subscribers: Dict[str, Set[queue.Queue]] = defaultdict(set)
 
 
 def parse_username_from_auth() -> Optional[str]:
@@ -851,6 +876,33 @@ def parse_username_from_auth() -> Optional[str]:
 	if not token.startswith('token_'):
 		return None
 	return token.replace('token_', '', 1)
+
+
+def parse_username_from_token_param() -> Optional[str]:
+    """Parse username from token in query string (for SSE/EventSource)."""
+    token = (request.args.get('token') or '').strip()
+    if not token.startswith('token_'):
+        return None
+    return token.replace('token_', '', 1)
+
+
+def notify_user(recipient_username: str, payload: Dict[str, Any]) -> None:
+    """Push a notification payload to all active SSE subscribers for the user."""
+    try:
+        subscribers = notification_subscribers.get(recipient_username, set())
+        dead_queues = []
+        for q in list(subscribers):
+            try:
+                q.put_nowait(payload)
+            except Exception:
+                dead_queues.append(q)
+        for dq in dead_queues:
+            try:
+                subscribers.discard(dq)
+            except Exception:
+                pass
+    except Exception as e:
+        print(f"notify_user error: {e}")
 
 
 @app.route('/api/health', methods=['GET'])
@@ -1120,6 +1172,55 @@ def create_bounty() -> Tuple[Any, int]:
 			(user_id, latitude, longitude, address_data['country'], address_data['state'], address_data['city'], f"/uploads/{image_filename}")
 		)
 		conn.commit()
+
+	# Fan-out notification to users in the same city (excluding reporter)
+	try:
+		with get_db_connection() as conn:
+			rows = conn.execute(
+				'SELECT username FROM users WHERE TRIM(LOWER(country)) = TRIM(LOWER(?)) AND TRIM(LOWER(state)) = TRIM(LOWER(?)) AND TRIM(LOWER(city)) = TRIM(LOWER(?)) AND username <> ?',
+				(address_data['country'], address_data['state'], address_data['city'], username)
+			).fetchall()
+			# Persist notifications and push to SSE subscribers
+			for r in rows:
+				recipient = r[0]
+				# Persist
+				user_row = conn.execute('SELECT id FROM users WHERE username = ?', (recipient,)).fetchone()
+				if user_row is None:
+					continue
+				recipient_id = int(user_row[0])
+				payload = {
+					"kind": "BOUNTY_CREATED",
+					"city": address_data['city'],
+					"state": address_data['state'],
+					"country": address_data['country'],
+					"latitude": latitude,
+					"longitude": longitude,
+					"image_url": f"/uploads/{image_filename}"
+				}
+				conn.execute(
+					'INSERT INTO notifications (user_id, type, title, message, city, payload) VALUES (?, ?, ?, ?, ?, ?)',
+					(
+						recipient_id,
+						'BOUNTY_CREATED',
+						'New bounty in your city',
+						f'New waste bounty reported in {address_data['city']}, {address_data['state']}',
+						address_data['city'],
+						json.dumps(payload)
+					)
+				)
+				# Push to live subscribers
+				notify_user(recipient, {
+					"id": None,
+					"type": "BOUNTY_CREATED",
+					"title": "New bounty in your city",
+					"message": f"New waste bounty reported in {address_data['city']}, {address_data['state']}",
+					"city": address_data['city'],
+					"payload": payload,
+					"created_at": time.strftime('%Y-%m-%d %H:%M:%S')
+				})
+			conn.commit()
+	except Exception as e:
+		print(f"Notification fan-out error: {e}")
 	
 	return jsonify({
 		"message": "Bounty created successfully",
@@ -1180,6 +1281,99 @@ def get_bounties() -> Tuple[Any, int]:
 			})
 	
 	return jsonify({"bounties": bounties}), 200
+
+
+@app.route('/api/notifications', methods=['GET'])
+def list_notifications() -> Tuple[Any, int]:
+    """List recent notifications for the authenticated user."""
+    username = parse_username_from_auth()
+    if not username:
+        return jsonify({"error": "unauthorized"}), 401
+    limit = int(request.args.get('limit', '50'))
+    with get_db_connection() as conn:
+        row = conn.execute('SELECT id FROM users WHERE username = ?', (username,)).fetchone()
+        if row is None:
+            return jsonify({"error": "user not found"}), 404
+        user_id = int(row[0])
+        rows = conn.execute(
+            'SELECT id, type, title, message, city, payload, created_at, read_at FROM notifications WHERE user_id = ? ORDER BY id DESC LIMIT ?',
+            (user_id, limit)
+        ).fetchall()
+        notifications = []
+        for r in rows:
+            notifications.append({
+                'id': r[0],
+                'type': r[1],
+                'title': r[2],
+                'message': r[3],
+                'city': r[4],
+                'payload': json.loads(r[5]) if r[5] else None,
+                'created_at': r[6],
+                'read_at': r[7]
+            })
+    return jsonify({"notifications": notifications}), 200
+
+
+@app.route('/api/notifications/read', methods=['POST'])
+def mark_notifications_read() -> Tuple[Any, int]:
+    """Mark notifications as read. Pass { ids: number[] } or mark all via all=true."""
+    username = parse_username_from_auth()
+    if not username:
+        return jsonify({"error": "unauthorized"}), 401
+    data = request.get_json(silent=True) or {}
+    ids = data.get('ids') or []
+    mark_all = bool(data.get('all'))
+    with get_db_connection() as conn:
+        row = conn.execute('SELECT id FROM users WHERE username = ?', (username,)).fetchone()
+        if row is None:
+            return jsonify({"error": "user not found"}), 404
+        user_id = int(row[0])
+        if mark_all:
+            conn.execute('UPDATE notifications SET read_at = CURRENT_TIMESTAMP WHERE user_id = ? AND read_at IS NULL', (user_id,))
+        elif ids:
+            # Build dynamic placeholders for ids
+            placeholders = ','.join(['?'] * len(ids))
+            conn.execute(f'UPDATE notifications SET read_at = CURRENT_TIMESTAMP WHERE user_id = ? AND id IN ({placeholders})', (user_id, *ids))
+        else:
+            return jsonify({"error": "no ids provided"}), 400
+        conn.commit()
+    return jsonify({"status": "ok"}), 200
+
+
+@app.route('/api/notifications/stream')
+def notifications_stream():
+    """Server-Sent Events stream for real-time user notifications."""
+    # For SSE we accept token as query param due to EventSource limitations
+    username = parse_username_from_token_param()
+    if not username:
+        return jsonify({"error": "unauthorized"}), 401
+
+    q: queue.Queue = queue.Queue()
+    notification_subscribers[username].add(q)
+
+    def gen():
+        try:
+            # Send an initial comment to establish the stream
+            yield ': connected\n\n'
+            while True:
+                payload = q.get()
+                data = json.dumps(payload)
+                yield f'data: {data}\n\n'
+        except GeneratorExit:
+            pass
+        finally:
+            try:
+                notification_subscribers[username].discard(q)
+            except Exception:
+                pass
+
+    headers = {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no'  # for some proxies
+    }
+    return Response(gen(), headers=headers)
 
 
 def verify_cleanup_with_gemini(original_image: np.ndarray, before_image: np.ndarray, after_image: np.ndarray) -> Dict[str, Any]:
