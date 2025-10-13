@@ -36,6 +36,12 @@ const WasteBounty = ({ currentUser, updatePoints }) => {
     const [afterLocation, setAfterLocation] = useState(null);
     const [cleanupStep, setCleanupStep] = useState('before'); // 'before', 'after', 'submit'
 
+    // Chat states (per-bounty)
+    const [openChatBountyId, setOpenChatBountyId] = useState(null);
+    const [chatMessagesByBounty, setChatMessagesByBounty] = useState({}); // { [bountyId]: [{id, sender_username, message, created_at}] }
+    const [chatInputByBounty, setChatInputByBounty] = useState({}); // { [bountyId]: string }
+    const [chatLoadingByBounty, setChatLoadingByBounty] = useState({}); // { [bountyId]: boolean }
+
     // Load bounties on component mount
     useEffect(() => {
         if (activeTab === 'bounties') {
@@ -290,6 +296,89 @@ const WasteBounty = ({ currentUser, updatePoints }) => {
         setSelectedBounty(bounty);
         setActiveTab('cleanup');
         setCleanupStep('before');
+    };
+
+    const toggleChat = async (bountyId) => {
+        if (openChatBountyId === bountyId) {
+            setOpenChatBountyId(null);
+            return;
+        }
+        setOpenChatBountyId(bountyId);
+        if (!chatMessagesByBounty[bountyId]) {
+            await loadChatMessages(bountyId);
+        }
+    };
+
+    const loadChatMessages = async (bountyId) => {
+        const token = localStorage.getItem('authToken');
+        setChatLoadingByBounty((m) => ({ ...m, [bountyId]: true }));
+        try {
+            const res = await fetch(`http://localhost:5000/api/bounty_chat?bounty_id=${encodeURIComponent(bountyId)}`, {
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+            const data = await res.json();
+            if (!res.ok) {
+                setError(data?.error || 'Failed to load chat');
+                return;
+            }
+            setChatMessagesByBounty((prev) => ({ ...prev, [bountyId]: data.messages || [] }));
+        } catch (e) {
+            setError('Failed to load chat');
+        } finally {
+            setChatLoadingByBounty((m) => ({ ...m, [bountyId]: false }));
+        }
+    };
+
+    const sendChatMessage = async (bountyId) => {
+        const token = localStorage.getItem('authToken');
+        const text = (chatInputByBounty[bountyId] || '').trim();
+        if (!text) return;
+        setChatLoadingByBounty((m) => ({ ...m, [bountyId]: true }));
+        try {
+            const res = await fetch('http://localhost:5000/api/bounty_chat', {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ bounty_id: bountyId, message: text })
+            });
+            const data = await res.json();
+            if (!res.ok) {
+                setError(data?.error || 'Failed to send message');
+                return;
+            }
+            setChatMessagesByBounty((prev) => ({
+                ...prev,
+                [bountyId]: [ ...(prev[bountyId] || []), data.message ]
+            }));
+            setChatInputByBounty((prev) => ({ ...prev, [bountyId]: '' }));
+        } catch (e) {
+            setError('Failed to send message');
+        } finally {
+            setChatLoadingByBounty((m) => ({ ...m, [bountyId]: false }));
+        }
+    };
+
+    const deleteChatMessage = async (bountyId, messageId) => {
+        const token = localStorage.getItem('authToken');
+        try {
+            const res = await fetch(`http://localhost:5000/api/bounty_chat/${messageId}`, {
+                method: 'DELETE',
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+            if (!res.ok) {
+                const data = await res.json().catch(() => ({}));
+                setError(data?.error || 'Failed to delete message');
+                return;
+            }
+            setChatMessagesByBounty((prev) => ({
+                ...prev,
+                [bountyId]: (prev[bountyId] || []).filter((m) => m.id !== messageId)
+            }));
+        } catch (e) {
+            setError('Failed to delete message');
+        }
     };
 
     const submitCleanup = async () => {
@@ -576,6 +665,11 @@ const WasteBounty = ({ currentUser, updatePoints }) => {
                                                     <p className="text-sm text-gray-400">
                                                         {bounty.city}, {bounty.state}
                                                     </p>
+                                                    {bounty.reporter_username && (
+                                                        <p className="text-xs text-gray-400 mt-0.5">
+                                                            Raised by <span className="text-gray-200 font-medium">@{bounty.reporter_username}</span>
+                                                        </p>
+                                                    )}
                                                 </div>
                                             </div>
                                             <p className="text-sm text-gray-300 mb-2">
@@ -600,12 +694,86 @@ const WasteBounty = ({ currentUser, updatePoints }) => {
                                             />
                                         </div>
                                     </div>
-                                    <button
-                                        onClick={() => claimBounty(bounty)}
-                                        className="w-full mt-3 py-2 bg-eco-accent text-eco-dark font-semibold rounded-lg hover:brightness-110 transition-colors"
-                                    >
-                                        Claim & Submit Cleanup Photos
-                                    </button>
+                                    {/* Chat toggle */}
+                                    <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                                        <button
+                                            onClick={() => claimBounty(bounty)}
+                                            className="py-2 bg-eco-accent text-eco-dark font-semibold rounded-lg hover:brightness-110 transition-colors"
+                                        >
+                                            Claim & Submit Cleanup Photos
+                                        </button>
+                                        <button
+                                            onClick={() => toggleChat(bounty.id)}
+                                            className="py-2 bg-white/10 text-gray-200 font-semibold rounded-lg hover:bg-white/20 transition-colors"
+                                        >
+                                            {openChatBountyId === bounty.id ? 'Hide Chat' : 'Open City Chat'}
+                                        </button>
+                                    </div>
+                                    {openChatBountyId === bounty.id && (
+                                        <div className="mt-3 p-3 rounded-lg bg-white/5 border border-white/10">
+                                            <div className="flex items-center justify-between mb-2">
+                                                <div className="text-sm text-gray-300 font-medium">City Chat</div>
+                                                {chatLoadingByBounty[bounty.id] ? (
+                                                    <div className="text-xs text-gray-400">Loading…</div>
+                                                ) : (
+                                                    <button
+                                                        onClick={() => loadChatMessages(bounty.id)}
+                                                        className="text-xs text-gray-300 hover:text-white"
+                                                    >
+                                                        Refresh
+                                                    </button>
+                                                )}
+                                            </div>
+                                            <div className="max-h-48 overflow-y-auto space-y-2 pr-1">
+                                                {(chatMessagesByBounty[bounty.id] || []).map((m) => {
+                                                    const canDelete = (currentUser?.username === bounty.reporter_username) || (currentUser?.username === m.sender_username);
+                                                    return (
+                                                        <div key={m.id} className="flex items-start gap-2">
+                                                            <div className="flex-1">
+                                                                <div className="text-xs text-gray-400">
+                                                                    <span className="text-gray-200 font-semibold">@{m.sender_username}</span>
+                                                                    <span className="ml-2 text-[10px] opacity-70">{new Date((m.created_at || '').replace(' ', 'T') + 'Z').toLocaleString()}</span>
+                                                                </div>
+                                                                <div className="text-sm text-gray-100 whitespace-pre-wrap">{m.message}</div>
+                                                            </div>
+                                                            {canDelete && (
+                                                                <button
+                                                                    onClick={() => deleteChatMessage(bounty.id, m.id)}
+                                                                    className="text-xs text-red-300 hover:text-red-200"
+                                                                    title="Delete message"
+                                                                >
+                                                                    ✖
+                                                                </button>
+                                                            )}
+                                                        </div>
+                                                    );
+                                                })}
+                                                {(chatMessagesByBounty[bounty.id] || []).length === 0 && !chatLoadingByBounty[bounty.id] && (
+                                                    <div className="text-xs text-gray-400">No messages yet. Be the first to say hi!</div>
+                                                )}
+                                            </div>
+                                            <div className="mt-2 flex items-center gap-2">
+                                                <input
+                                                    type="text"
+                                                    value={chatInputByBounty[bounty.id] || ''}
+                                                    onChange={(e) => setChatInputByBounty((prev) => ({ ...prev, [bounty.id]: e.target.value }))}
+                                                    placeholder="Type a message…"
+                                                    className="flex-1 px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white placeholder-gray-400 text-sm"
+                                                />
+                                                <button
+                                                    onClick={() => sendChatMessage(bounty.id)}
+                                                    disabled={chatLoadingByBounty[bounty.id] || !(chatInputByBounty[bounty.id] || '').trim()}
+                                                    className={`px-3 py-2 rounded-lg text-sm font-semibold ${
+                                                        chatLoadingByBounty[bounty.id] || !(chatInputByBounty[bounty.id] || '').trim()
+                                                            ? 'bg-gray-500/40 text-gray-300 cursor-not-allowed'
+                                                            : 'bg-eco-green text-eco-dark hover:brightness-110'
+                                                    }`}
+                                                >
+                                                    Send
+                                                </button>
+                                            </div>
+                                        </div>
+                                    )}
                                 </div>
                             ))}
                         </div>

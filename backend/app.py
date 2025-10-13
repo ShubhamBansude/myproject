@@ -843,6 +843,23 @@ def init_db() -> None:
 			conn.execute('ALTER TABLE waste_bounty ADD COLUMN before_image_url TEXT')
 		if 'after_image_url' not in columns:
 			conn.execute('ALTER TABLE waste_bounty ADD COLUMN after_image_url TEXT')
+		# Bounty chat messages table for per-bounty chat
+		conn.execute(
+			'CREATE TABLE IF NOT EXISTS bounty_chat_messages ('
+			'  id INTEGER PRIMARY KEY AUTOINCREMENT,'
+			'  bounty_id INTEGER NOT NULL,'
+			'  sender_user_id INTEGER NOT NULL,'
+			'  message TEXT NOT NULL,'
+			'  city TEXT NOT NULL,'
+			'  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,'
+			'  deleted_at DATETIME,'
+			'  deleted_by_user_id INTEGER,'
+			'  FOREIGN KEY(bounty_id) REFERENCES waste_bounty(id),'
+			'  FOREIGN KEY(sender_user_id) REFERENCES users(id),'
+			'  FOREIGN KEY(deleted_by_user_id) REFERENCES users(id)'
+			')'
+		)
+		conn.execute('CREATE INDEX IF NOT EXISTS idx_bounty_chat_bounty_id ON bounty_chat_messages(bounty_id)')
 		conn.commit()
 
 		# Notifications table
@@ -1284,13 +1301,17 @@ def get_bounties() -> Tuple[Any, int]:
 	# Get active bounties strictly in user's city
 	with get_db_connection() as conn:
 		rows = conn.execute(
-			'SELECT id, latitude, longitude, country, state, city, bounty_points, waste_image_url, created_at, before_image_url, after_image_url\n\
-			 FROM waste_bounty\n\
-			 WHERE status = "REPORTED"\n\
-			   AND TRIM(LOWER(country)) = TRIM(LOWER(?))\n\
-			   AND TRIM(LOWER(state)) = TRIM(LOWER(?))\n\
-			   AND TRIM(LOWER(city)) = TRIM(LOWER(?))\n\
-			 ORDER BY created_at DESC',
+			'SELECT '\
+			'  b.id, b.latitude, b.longitude, b.country, b.state, b.city, '\
+			'  b.bounty_points, b.waste_image_url, b.created_at, b.before_image_url, b.after_image_url, '\
+			'  u.username AS reporter_username '\
+			'FROM waste_bounty b '\
+			'JOIN users u ON u.id = b.reporter_user_id '\
+			'WHERE b.status = "REPORTED" '\
+			'  AND TRIM(LOWER(b.country)) = TRIM(LOWER(?)) '\
+			'  AND TRIM(LOWER(b.state)) = TRIM(LOWER(?)) '\
+			'  AND TRIM(LOWER(b.city)) = TRIM(LOWER(?)) '\
+			'ORDER BY b.created_at DESC',
 			(user_country, user_state, user_city)
 		).fetchall()
 		print(f"Found {len(rows)} bounties for user city: {user_city}")
@@ -1308,12 +1329,148 @@ def get_bounties() -> Tuple[Any, int]:
 				"waste_image_url": row[7],
 				"created_at": row[8],
 				"before_image_url": row[9],
-				"after_image_url": row[10]
+				"after_image_url": row[10],
+				"reporter_username": row[11]
 			})
 	
 	return jsonify({"bounties": bounties}), 200
 
 
+@app.route('/api/bounty_chat', methods=['GET'])
+def get_bounty_chat():
+    """Get chat messages for a bounty; only same-city users can read."""
+    username = parse_username_from_auth()
+    if not username:
+        return jsonify({"error": "unauthorized"}), 401
+    bounty_id = request.args.get('bounty_id')
+    if not bounty_id:
+        return jsonify({"error": "bounty_id is required"}), 400
+    try:
+        bounty_id_int = int(bounty_id)
+    except ValueError:
+        return jsonify({"error": "invalid bounty_id"}), 400
+
+    with get_db_connection() as conn:
+        user_row = conn.execute('SELECT id, city FROM users WHERE username = ?', (username,)).fetchone()
+        if user_row is None:
+            return jsonify({"error": "user not found"}), 404
+        user_id = int(user_row[0])
+        user_city = str(user_row[1])
+
+        b_row = conn.execute('SELECT city FROM waste_bounty WHERE id = ?', (bounty_id_int,)).fetchone()
+        if b_row is None:
+            return jsonify({"error": "bounty not found"}), 404
+        bounty_city = str(b_row[0])
+
+        if user_city.strip().lower() != bounty_city.strip().lower():
+            return jsonify({"error": "forbidden: different city"}), 403
+
+        rows = conn.execute(
+            'SELECT m.id, u.username, m.message, m.created_at '\
+            'FROM bounty_chat_messages m JOIN users u ON u.id = m.sender_user_id '\
+            'WHERE m.bounty_id = ? AND m.deleted_at IS NULL ORDER BY m.id ASC',
+            (bounty_id_int,)
+        ).fetchall()
+
+        messages = []
+        for r in rows:
+            messages.append({
+                'id': r[0],
+                'sender_username': r[1],
+                'message': r[2],
+                'created_at': r[3]
+            })
+
+    return jsonify({"messages": messages}), 200
+
+
+@app.route('/api/bounty_chat', methods=['POST'])
+def post_bounty_chat():
+    """Post a chat message to a bounty; must be in same city; bounty must be open."""
+    username = parse_username_from_auth()
+    if not username:
+        return jsonify({"error": "unauthorized"}), 401
+    data = request.get_json(silent=True) or {}
+    bounty_id = data.get('bounty_id')
+    message_text = (data.get('message') or '').strip()
+    if not bounty_id or not message_text:
+        return jsonify({"error": "bounty_id and message are required"}), 400
+    if len(message_text) > 1000:
+        return jsonify({"error": "message too long"}), 400
+    try:
+        bounty_id_int = int(bounty_id)
+    except (ValueError, TypeError):
+        return jsonify({"error": "invalid bounty_id"}), 400
+
+    with get_db_connection() as conn:
+        user_row = conn.execute('SELECT id, city FROM users WHERE username = ?', (username,)).fetchone()
+        if user_row is None:
+            return jsonify({"error": "user not found"}), 404
+        user_id = int(user_row[0])
+        user_city = str(user_row[1])
+
+        b_row = conn.execute('SELECT city, status FROM waste_bounty WHERE id = ?', (bounty_id_int,)).fetchone()
+        if b_row is None:
+            return jsonify({"error": "bounty not found"}), 404
+        bounty_city, bounty_status = str(b_row[0]), str(b_row[1])
+
+        if user_city.strip().lower() != bounty_city.strip().lower():
+            return jsonify({"error": "forbidden: different city"}), 403
+        if bounty_status != 'REPORTED':
+            return jsonify({"error": "chat closed for this bounty"}), 400
+
+        conn.execute(
+            'INSERT INTO bounty_chat_messages (bounty_id, sender_user_id, message, city) VALUES (?, ?, ?, ?)',
+            (bounty_id_int, user_id, message_text, bounty_city)
+        )
+        conn.commit()
+
+        row = conn.execute(
+            'SELECT id, ? as username, message, created_at FROM bounty_chat_messages WHERE id = last_insert_rowid()',
+            (username,)
+        ).fetchone()
+
+    created = {
+        'id': row[0],
+        'sender_username': row[1],
+        'message': row[2],
+        'created_at': row[3]
+    }
+    return jsonify({"message": created}), 201
+
+
+@app.route('/api/bounty_chat/<int:message_id>', methods=['DELETE'])
+def delete_bounty_chat(message_id: int):
+    """Delete a chat message. Allowed for bounty raiser or the message sender."""
+    username = parse_username_from_auth()
+    if not username:
+        return jsonify({"error": "unauthorized"}), 401
+
+    with get_db_connection() as conn:
+        urow = conn.execute('SELECT id FROM users WHERE username = ?', (username,)).fetchone()
+        if urow is None:
+            return jsonify({"error": "user not found"}), 404
+        current_user_id = int(urow[0])
+
+        row = conn.execute(
+            'SELECT m.bounty_id, m.sender_user_id, b.reporter_user_id '
+            'FROM bounty_chat_messages m JOIN waste_bounty b ON b.id = m.bounty_id '
+            'WHERE m.id = ?', (message_id,)
+        ).fetchone()
+        if row is None:
+            return jsonify({"error": "message not found"}), 404
+        bounty_id, sender_user_id, reporter_user_id = int(row[0]), int(row[1]), int(row[2])
+
+        if current_user_id not in (reporter_user_id, sender_user_id):
+            return jsonify({"error": "forbidden"}), 403
+
+        conn.execute(
+            'UPDATE bounty_chat_messages SET deleted_at = CURRENT_TIMESTAMP, deleted_by_user_id = ? WHERE id = ?',
+            (current_user_id, message_id)
+        )
+        conn.commit()
+
+    return jsonify({"status": "ok"}), 200
 @app.route('/api/notifications', methods=['GET'])
 def list_notifications() -> Tuple[Any, int]:
     """List recent notifications for the authenticated user."""
