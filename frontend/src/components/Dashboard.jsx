@@ -5,6 +5,7 @@ import React, { useState, useEffect, lazy, Suspense, useRef } from 'react';
 // Lazy-load heavy tab panels to split Dashboard chunk
 const EarnPoints = lazy(() => import('./EarnPoints'));
 const WasteBounty = lazy(() => import('./WasteBounty'));
+const ClansPanel = lazy(() => import('./ClansPanel'));
 
 const RewardsShop = ({ onRedeem }) => {
   const [coupons, setCoupons] = useState([]);
@@ -302,7 +303,18 @@ const Dashboard = ({ currentUser, onLogout, setCurrentUser }) => {
   } else if (activeTab === 'bounty') {
     main = <WasteBounty currentUser={currentUser} updatePoints={updatePoints} />;
   } else if (activeTab === 'rewards') {
-    main = <RewardsShop onRedeem={updatePoints} />;
+    main = (
+      <div className="grid gap-4 lg:grid-cols-[1fr_1.2fr]">
+        {/* Left: Clans system */}
+        <div className="order-2 lg:order-1">
+          <ClansPanel currentUser={currentUser} />
+        </div>
+        {/* Right: Rewards shop */}
+        <div className="order-1 lg:order-2">
+          <RewardsShop onRedeem={updatePoints} />
+        </div>
+      </div>
+    );
   } else {
     main = <ProfileView user={currentUser} setCurrentUser={setCurrentUser} />;
   }
