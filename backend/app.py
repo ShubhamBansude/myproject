@@ -15,6 +15,8 @@ from flask_cors import CORS
 import bcrypt
 import queue
 from collections import defaultdict
+import smtplib
+from email.message import EmailMessage
 
 # Image processing
 import cv2
@@ -907,6 +909,13 @@ def init_db() -> None:
 		conn.commit()
 
 
+# Ensure database schema exists even when app is imported via WSGI
+try:
+    init_db()
+except Exception as e:
+    print(f"init_db on import failed: {e}")
+
+
 app = Flask(__name__)
 
 # Limit upload size (MB) to mitigate abuse; default 25MB
@@ -1046,9 +1055,43 @@ def validate_and_consume_email_otp(email: str, purpose: str, code_plain: str) ->
             return {}
 
 
-def send_email_otp_dev(email: str, purpose: str, otp_code: str) -> None:
-    # In dev environment, log the OTP to console
-    print(f"[DEV] OTP for {purpose} to {email}: {otp_code}")
+def send_email_otp(email: str, purpose: str, otp_code: str) -> None:
+    """Send OTP via SMTP if configured, else log to console.
+
+    Env vars:
+      SMTP_HOST, SMTP_PORT (default 587), SMTP_USER, SMTP_PASS,
+      SMTP_TLS (default '1'), MAIL_FROM (default 'no-reply@localhost').
+    """
+    host = (os.environ.get('SMTP_HOST') or '').strip()
+    if not host:
+        print(f"[DEV] OTP for {purpose} to {email}: {otp_code}")
+        return
+    port = int(os.environ.get('SMTP_PORT', '587') or '587')
+    user = os.environ.get('SMTP_USER')
+    password = os.environ.get('SMTP_PASS')
+    use_tls = (os.environ.get('SMTP_TLS', '1') or '1') not in ('0', 'false', 'False')
+    from_addr = (os.environ.get('MAIL_FROM') or 'no-reply@localhost').strip()
+
+    msg = EmailMessage()
+    msg['Subject'] = f"Your {purpose.replace('_', ' ').title()} OTP"
+    msg['From'] = from_addr
+    msg['To'] = email
+    msg.set_content(
+        f"Your one-time code is: {otp_code}\n\n"
+        f"This code expires in 10 minutes. If you did not request this, you can ignore this email."
+    )
+
+    try:
+        with smtplib.SMTP(host, port, timeout=15) as server:
+            if use_tls:
+                server.starttls()
+            if user:
+                server.login(user, password or '')
+            server.send_message(msg)
+        print(f"[SMTP] OTP email sent to {email} for {purpose}")
+    except Exception as e:
+        print(f"[SMTP] Failed to send OTP email to {email}: {e}. Falling back to console log.")
+        print(f"[DEV] OTP for {purpose} to {email}: {otp_code}")
 
 
 @app.route('/api/health', methods=['GET'])
@@ -1139,10 +1182,20 @@ def login() -> Tuple[Any, int]:
 		return jsonify({"error": "username/email and password are required"}), 400
 
 	with get_db_connection() as conn:
-		row = conn.execute(
-			'SELECT username, email, password_hash, total_points, country, state, city FROM users WHERE TRIM(LOWER(username)) = TRIM(LOWER(?)) OR TRIM(LOWER(email)) = TRIM(LOWER(?))',
-			(identifier, identifier),
-		).fetchone()
+		try:
+			row = conn.execute(
+				'SELECT username, email, password_hash, total_points, country, state, city FROM users WHERE TRIM(LOWER(username)) = TRIM(LOWER(?)) OR TRIM(LOWER(email)) = TRIM(LOWER(?))',
+				(identifier, identifier),
+			).fetchone()
+		except sqlite3.OperationalError as e:
+			# Backward-compat: fall back to username-only query if email column is missing
+			if 'no such column: email' in str(e):
+				row = conn.execute(
+					'SELECT username, NULL as email, password_hash, total_points, country, state, city FROM users WHERE TRIM(LOWER(username)) = TRIM(LOWER(?))',
+					(identifier,),
+				).fetchone()
+			else:
+				raise
 
 	if row is None:
 		return jsonify({"error": "invalid credentials"}), 401
@@ -1184,7 +1237,7 @@ def request_username_change() -> Tuple[Any, int]:
             return jsonify({"error": "username already exists"}), 409
     otp = generate_otp_code(6)
     store_email_otp(email=email, purpose='change_username', code_plain=otp, metadata={"new_username": new_username}, ttl_minutes=10)
-    send_email_otp_dev(email, 'change_username', otp)
+    send_email_otp(email, 'change_username', otp)
     resp = {"message": "OTP sent to email for username change"}
     if os.environ.get('DEV_MODE_OTP') == '1':
         resp['dev_otp'] = otp
@@ -1239,7 +1292,7 @@ def request_password_reset() -> Tuple[Any, int]:
     if row is not None:
         otp = generate_otp_code(6)
         store_email_otp(email=email, purpose='reset_password', code_plain=otp, metadata=None, ttl_minutes=10)
-        send_email_otp_dev(email, 'reset_password', otp)
+        send_email_otp(email, 'reset_password', otp)
     resp = {"message": "If the email exists, an OTP has been sent."}
     if os.environ.get('DEV_MODE_OTP') == '1' and row is not None:
         resp['dev_otp'] = otp
