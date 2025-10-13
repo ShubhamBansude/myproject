@@ -11,7 +11,7 @@ const loadEXIF = async () => {
   return EXIFLibPromise.then(mod => mod.default || mod);
 };
 
-const WasteBounty = ({ updatePoints }) => {
+const WasteBounty = ({ currentUser, updatePoints }) => {
     const [activeTab, setActiveTab] = useState('report'); // 'report', 'bounties', 'cleanup'
     const [bounties, setBounties] = useState([]);
     const [loading, setLoading] = useState(false);
@@ -445,6 +445,34 @@ const WasteBounty = ({ updatePoints }) => {
         }
     };
 
+    // Leaderboard state
+    const [topUsers, setTopUsers] = useState([]);
+    const [topClans, setTopClans] = useState([]);
+    const [leaderboardCity, setLeaderboardCity] = useState('');
+    const [lbLoading, setLbLoading] = useState(false);
+
+    const loadLeaderboard = async () => {
+        setLbLoading(true);
+        try {
+            const token = localStorage.getItem('authToken');
+            const res = await fetch('http://localhost:5000/api/leaderboard?limit=10', {
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+            const data = await res.json();
+            if (res.ok) {
+                setTopUsers(Array.isArray(data.top_users) ? data.top_users : []);
+                setTopClans(Array.isArray(data.top_clans) ? data.top_clans : []);
+                setLeaderboardCity(data.city || '');
+            }
+        } catch {
+            // ignore
+        } finally {
+            setLbLoading(false);
+        }
+    };
+
+    useEffect(() => { loadLeaderboard(); }, []);
+
     return (
         <div className="space-y-6">
             <div className="flex items-center justify-between">
@@ -645,141 +673,190 @@ const WasteBounty = ({ updatePoints }) => {
                             {loading ? 'Loading...' : 'Refresh'}
                         </button>
                     </div>
-
-                    {bounties.length === 0 ? (
-                        <div className="text-center py-8 text-gray-400">
-                            <div className="text-4xl mb-2">🎯</div>
-                            <p>No active bounties in your area</p>
-                            <p className="text-sm mt-1">Be the first to report waste spots!</p>
-                        </div>
-                    ) : (
-                        <div className="grid gap-4">
-                            {bounties.map((bounty) => (
-                                <div key={bounty.id} className="bg-white/5 border border-white/10 rounded-lg p-4">
-                                    <div className="flex items-start justify-between">
-                                        <div className="flex-1">
-                                            <div className="flex items-center gap-2 mb-2">
-                                                <span className="text-2xl">🗑️</span>
-                                                <div>
-                                                    <p className="font-semibold text-gray-100">
-                                                        Bounty #{bounty.id}
-                                                    </p>
-                                                    <p className="text-sm text-gray-400">
-                                                        {bounty.city}, {bounty.state}
-                                                    </p>
-                                                    {bounty.reporter_username && (
-                                                        <p className="text-xs text-gray-400 mt-0.5">
-                                                            Raised by <span className="text-gray-200 font-medium">@{bounty.reporter_username}</span>
+                    <div className="grid lg:grid-cols-3 gap-4">
+                      <div className="lg:col-span-2">
+                        {bounties.length === 0 ? (
+                            <div className="text-center py-8 text-gray-400">
+                                <div className="text-4xl mb-2">🎯</div>
+                                <p>No active bounties in your area</p>
+                                <p className="text-sm mt-1">Be the first to report waste spots!</p>
+                            </div>
+                        ) : (
+                            <div className="grid gap-4">
+                                {bounties.map((bounty) => (
+                                    <div key={bounty.id} className="bg-white/5 border border-white/10 rounded-lg p-4">
+                                        <div className="flex items-start justify-between">
+                                            <div className="flex-1">
+                                                <div className="flex items-center gap-2 mb-2">
+                                                    <span className="text-2xl">🗑️</span>
+                                                    <div>
+                                                        <p className="font-semibold text-gray-100">
+                                                            Bounty #{bounty.id}
                                                         </p>
-                                                    )}
+                                                        <p className="text-sm text-gray-400">
+                                                            {bounty.city}, {bounty.state}
+                                                        </p>
+                                                        {bounty.reporter_username && (
+                                                            <p className="text-xs text-gray-400 mt-0.5">
+                                                                Raised by <span className="text-gray-200 font-medium">@{bounty.reporter_username}</span>
+                                                            </p>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                                <p className="text-sm text-gray-300 mb-2">
+                                                    Reported: {new Date(bounty.created_at).toLocaleDateString()}
+                                                </p>
+                                                <div className="flex items-center gap-4 text-sm">
+                                                    <span className="text-eco-green font-semibold">
+                                                        +{bounty.bounty_points} pts
+                                                    </span>
+                                                    <span className="text-gray-400">
+                                                        📍 {bounty.latitude.toFixed(4)}, {bounty.longitude.toFixed(4)}
+                                                    </span>
                                                 </div>
                                             </div>
-                                            <p className="text-sm text-gray-300 mb-2">
-                                                Reported: {new Date(bounty.created_at).toLocaleDateString()}
-                                            </p>
-                                            <div className="flex items-center gap-4 text-sm">
-                                                <span className="text-eco-green font-semibold">
-                                                    +{bounty.bounty_points} pts
-                                                </span>
-                                                <span className="text-gray-400">
-                                                    📍 {bounty.latitude.toFixed(4)}, {bounty.longitude.toFixed(4)}
-                                                </span>
-                                            </div>
-                                        </div>
-                                        <div className="ml-4">
-                                            <img
-                                                src={`http://localhost:5000${bounty.waste_image_url}`}
-                                                alt="Waste spot"
-                                                className="w-20 h-20 object-cover rounded-lg"
-                                                loading="lazy"
-                                                decoding="async"
-                                            />
-                                        </div>
-                                    </div>
-                                    {/* Chat toggle */}
-                                    <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
-                                        <button
-                                            onClick={() => claimBounty(bounty)}
-                                            className="py-2 bg-eco-accent text-eco-dark font-semibold rounded-lg hover:brightness-110 transition-colors"
-                                        >
-                                            Claim & Submit Cleanup Photos
-                                        </button>
-                                        <button
-                                            onClick={() => toggleChat(bounty.id)}
-                                            className="py-2 bg-white/10 text-gray-200 font-semibold rounded-lg hover:bg-white/20 transition-colors"
-                                        >
-                                            {openChatBountyId === bounty.id ? 'Hide Chat' : 'Open City Chat'}
-                                        </button>
-                                    </div>
-                                    {openChatBountyId === bounty.id && (
-                                        <div className="mt-3 p-3 rounded-lg bg-white/5 border border-white/10">
-                                            <div className="flex items-center justify-between mb-2">
-                                                <div className="text-sm text-gray-300 font-medium">City Chat</div>
-                                                {chatLoadingByBounty[bounty.id] ? (
-                                                    <div className="text-xs text-gray-400">Loading…</div>
-                                                ) : (
-                                                    <button
-                                                        onClick={() => loadChatMessages(bounty.id)}
-                                                        className="text-xs text-gray-300 hover:text-white"
-                                                    >
-                                                        Refresh
-                                                    </button>
-                                                )}
-                                            </div>
-                                            <div className="max-h-48 overflow-y-auto space-y-2 pr-1">
-                                                {(chatMessagesByBounty[bounty.id] || []).map((m) => {
-                                                    const canDelete = (currentUser?.username === bounty.reporter_username) || (currentUser?.username === m.sender_username);
-                                                    return (
-                                                        <div key={m.id} className="flex items-start gap-2">
-                                                            <div className="flex-1">
-                                                                <div className="text-xs text-gray-400">
-                                                                    <span className="text-gray-200 font-semibold">@{m.sender_username}</span>
-                                                                    <span className="ml-2 text-[10px] opacity-70">{new Date((m.created_at || '').replace(' ', 'T') + 'Z').toLocaleString()}</span>
-                                                                </div>
-                                                                <div className="text-sm text-gray-100 whitespace-pre-wrap">{m.message}</div>
-                                                            </div>
-                                                            {canDelete && (
-                                                                <button
-                                                                    onClick={() => deleteChatMessage(bounty.id, m.id)}
-                                                                    className="text-xs text-red-300 hover:text-red-200"
-                                                                    title="Delete message"
-                                                                >
-                                                                    ✖
-                                                                </button>
-                                                            )}
-                                                        </div>
-                                                    );
-                                                })}
-                                                {(chatMessagesByBounty[bounty.id] || []).length === 0 && !chatLoadingByBounty[bounty.id] && (
-                                                    <div className="text-xs text-gray-400">No messages yet. Be the first to say hi!</div>
-                                                )}
-                                            </div>
-                                            <div className="mt-2 flex items-center gap-2">
-                                                <input
-                                                    type="text"
-                                                    value={chatInputByBounty[bounty.id] || ''}
-                                                    onChange={(e) => setChatInputByBounty((prev) => ({ ...prev, [bounty.id]: e.target.value }))}
-                                                    placeholder="Type a message…"
-                                                    className="flex-1 px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white placeholder-gray-400 text-sm"
+                                            <div className="ml-4">
+                                                <img
+                                                    src={`http://localhost:5000${bounty.waste_image_url}`}
+                                                    alt="Waste spot"
+                                                    className="w-20 h-20 object-cover rounded-lg"
+                                                    loading="lazy"
+                                                    decoding="async"
                                                 />
-                                                <button
-                                                    onClick={() => sendChatMessage(bounty.id)}
-                                                    disabled={chatLoadingByBounty[bounty.id] || !(chatInputByBounty[bounty.id] || '').trim()}
-                                                    className={`px-3 py-2 rounded-lg text-sm font-semibold ${
-                                                        chatLoadingByBounty[bounty.id] || !(chatInputByBounty[bounty.id] || '').trim()
-                                                            ? 'bg-gray-500/40 text-gray-300 cursor-not-allowed'
-                                                            : 'bg-eco-green text-eco-dark hover:brightness-110'
-                                                    }`}
-                                                >
-                                                    Send
-                                                </button>
                                             </div>
                                         </div>
-                                    )}
-                                </div>
-                            ))}
+                                        {/* Chat toggle */}
+                                        <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                                            <button
+                                                onClick={() => claimBounty(bounty)}
+                                                className="py-2 bg-eco-accent text-eco-dark font-semibold rounded-lg hover:brightness-110 transition-colors"
+                                            >
+                                                Claim & Submit Cleanup Photos
+                                            </button>
+                                            <button
+                                                onClick={() => toggleChat(bounty.id)}
+                                                className="py-2 bg-white/10 text-gray-200 font-semibold rounded-lg hover:bg-white/20 transition-colors"
+                                            >
+                                                {openChatBountyId === bounty.id ? 'Hide Chat' : 'Open City Chat'}
+                                            </button>
+                                        </div>
+                                        {openChatBountyId === bounty.id && (
+                                            <div className="mt-3 p-3 rounded-lg bg-white/5 border border-white/10">
+                                                <div className="flex items-center justify-between mb-2">
+                                                    <div className="text-sm text-gray-300 font-medium">City Chat</div>
+                                                    {chatLoadingByBounty[bounty.id] ? (
+                                                        <div className="text-xs text-gray-400">Loading…</div>
+                                                    ) : (
+                                                        <button
+                                                            onClick={() => loadChatMessages(bounty.id)}
+                                                            className="text-xs text-gray-300 hover:text-white"
+                                                        >
+                                                            Refresh
+                                                        </button>
+                                                    )}
+                                                </div>
+                                                <div className="max-h-48 overflow-y-auto space-y-2 pr-1">
+                                                    {(chatMessagesByBounty[bounty.id] || []).map((m) => {
+                                                        const canDelete = (currentUser?.username === bounty.reporter_username) || (currentUser?.username === m.sender_username);
+                                                        return (
+                                                            <div key={m.id} className="flex items-start gap-2">
+                                                                <div className="flex-1">
+                                                                    <div className="text-xs text-gray-400">
+                                                                        <span className="text-gray-200 font-semibold">@{m.sender_username}</span>
+                                                                        <span className="ml-2 text-[10px] opacity-70">{new Date((m.created_at || '').replace(' ', 'T') + 'Z').toLocaleString()}</span>
+                                                                    </div>
+                                                                    <div className="text-sm text-gray-100 whitespace-pre-wrap">{m.message}</div>
+                                                                </div>
+                                                                {canDelete && (
+                                                                    <button
+                                                                        onClick={() => deleteChatMessage(bounty.id, m.id)}
+                                                                        className="text-xs text-red-300 hover:text-red-200"
+                                                                        title="Delete message"
+                                                                    >
+                                                                        ✖
+                                                                    </button>
+                                                                )}
+                                                            </div>
+                                                        );
+                                                    })}
+                                                    {(chatMessagesByBounty[bounty.id] || []).length === 0 && !chatLoadingByBounty[bounty.id] && (
+                                                        <div className="text-xs text-gray-400">No messages yet. Be the first to say hi!</div>
+                                                    )}
+                                                </div>
+                                                <div className="mt-2 flex items-center gap-2">
+                                                    <input
+                                                        type="text"
+                                                        value={chatInputByBounty[bounty.id] || ''}
+                                                        onChange={(e) => setChatInputByBounty((prev) => ({ ...prev, [bounty.id]: e.target.value }))}
+                                                        placeholder="Type a message…"
+                                                        className="flex-1 px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white placeholder-gray-400 text-sm"
+                                                    />
+                                                    <button
+                                                        onClick={() => sendChatMessage(bounty.id)}
+                                                        disabled={chatLoadingByBounty[bounty.id] || !(chatInputByBounty[bounty.id] || '').trim()}
+                                                        className={`px-3 py-2 rounded-lg text-sm font-semibold ${
+                                                            chatLoadingByBounty[bounty.id] || !(chatInputByBounty[bounty.id] || '').trim()
+                                                                ? 'bg-gray-500/40 text-gray-300 cursor-not-allowed'
+                                                                : 'bg-eco-green text-eco-dark hover:brightness-110'
+                                                        }`}
+                                                    >
+                                                        Send
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        )}
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                      </div>
+                      {/* Right side Leaderboard */}
+                      <aside className="lg:col-span-1">
+                        <div className="sticky top-2 space-y-4">
+                          <div className="rounded-xl bg-white/5 border border-white/10 p-4">
+                            <div className="flex items-center justify-between mb-2">
+                              <h4 className="text-sm font-semibold text-gray-100">🏆 Top Users</h4>
+                              <button onClick={loadLeaderboard} className="text-xs text-gray-300">{lbLoading ? '…' : 'Refresh'}</button>
+                            </div>
+                            <div className="text-xs text-gray-400 mb-2">{leaderboardCity ? `City: ${leaderboardCity}` : ''}</div>
+                            <ol className="space-y-2">
+                              {topUsers.map((u, idx) => (
+                                <li key={u.username} className="flex items-center justify-between text-sm">
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-gray-400">{idx + 1}.</span>
+                                    <span className="text-gray-200 font-medium">@{u.username}</span>
+                                  </div>
+                                  <span className="text-eco-green">{u.total_points} pts</span>
+                                </li>
+                              ))}
+                              {topUsers.length === 0 && !lbLoading && (
+                                <div className="text-xs text-gray-400">No users yet.</div>
+                              )}
+                            </ol>
+                          </div>
+                          <div className="rounded-xl bg-white/5 border border-white/10 p-4">
+                            <div className="flex items-center justify-between mb-2">
+                              <h4 className="text-sm font-semibold text-gray-100">🏅 Top Clans</h4>
+                            </div>
+                            <ol className="space-y-2">
+                              {topClans.map((c, idx) => (
+                                <li key={c.id} className="flex items-center justify-between text-sm">
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-gray-400">{idx + 1}.</span>
+                                    <span className="text-gray-200 font-medium">{c.name}</span>
+                                    <span className="text-gray-400 text-xs">({c.member_count})</span>
+                                  </div>
+                                  <span className="text-amber-300">{c.clan_points} pts</span>
+                                </li>
+                              ))}
+                              {topClans.length === 0 && !lbLoading && (
+                                <div className="text-xs text-gray-400">No clans yet.</div>
+                              )}
+                            </ol>
+                          </div>
                         </div>
-                    )}
+                      </aside>
+                    </div>
                 </div>
             )}
 

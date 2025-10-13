@@ -5,6 +5,7 @@ import React, { useState, useEffect, lazy, Suspense, useRef } from 'react';
 // Lazy-load heavy tab panels to split Dashboard chunk
 const EarnPoints = lazy(() => import('./EarnPoints'));
 const WasteBounty = lazy(() => import('./WasteBounty'));
+const Clans = lazy(() => import('./Clans'));
 
 const RewardsShop = ({ onRedeem }) => {
   const [coupons, setCoupons] = useState([]);
@@ -219,6 +220,7 @@ const Dashboard = ({ currentUser, onLogout, setCurrentUser }) => {
   const tabs = [
     { key: 'detection', label: 'Earn Points', icon: '📸' },
     { key: 'bounty', label: 'Waste Bounty', icon: '🗺️' },
+    { key: 'clans', label: 'Clans', icon: '🛡️' },
     { key: 'rewards', label: 'Rewards', icon: '🎁' },
     { key: 'profile', label: 'Profile', icon: '👤' },
   ];
@@ -228,6 +230,8 @@ const Dashboard = ({ currentUser, onLogout, setCurrentUser }) => {
     main = <EarnPoints currentUser={currentUser} updatePoints={updatePoints} />;
   } else if (activeTab === 'bounty') {
     main = <WasteBounty currentUser={currentUser} updatePoints={updatePoints} />;
+  } else if (activeTab === 'clans') {
+    main = <Clans currentUser={currentUser} />;
   } else if (activeTab === 'rewards') {
     main = <RewardsShop onRedeem={updatePoints} />;
   } else {
