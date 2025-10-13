@@ -47,20 +47,25 @@ const RewardsShop = ({ onRedeem }) => {
   };
 
   return (
-    <div>
-      {loading && <div className="text-gray-300">Loading...</div>}
-      {error && <div className="p-3 mb-3 text-sm text-red-300 bg-red-500/10 border border-red-500/20 rounded">{error}</div>}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {coupons.map(c => (
-          <div key={c.id} className="rounded-xl bg-white/5 border border-white/10 p-4">
-            <div className="text-lg font-semibold text-gray-100">{c.name}</div>
-            <div className="text-sm text-gray-300 mb-2">{c.description}</div>
-            <div className="flex items-center justify-between">
-              <span className="px-3 py-1 rounded-full bg-eco-green/20 text-eco-green border border-eco-green/30 text-sm">{c.points_cost} pts</span>
-              <button onClick={() => redeem(c.id)} className="px-3 py-2 rounded-lg bg-eco-green text-white text-sm hover:brightness-110">Redeem</button>
+    <div className="grid gap-6 lg:grid-cols-3">
+      <div className="lg:col-span-2">
+        {loading && <div className="text-gray-300">Loading...</div>}
+        {error && <div className="p-3 mb-3 text-sm text-red-300 bg-red-500/10 border border-red-500/20 rounded">{error}</div>}
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
+          {coupons.map(c => (
+            <div key={c.id} className="rounded-xl bg-white/5 border border-white/10 p-4">
+              <div className="text-lg font-semibold text-gray-100">{c.name}</div>
+              <div className="text-sm text-gray-300 mb-2">{c.description}</div>
+              <div className="flex items-center justify-between">
+                <span className="px-3 py-1 rounded-full bg-eco-green/20 text-eco-green border border-eco-green/30 text-sm">{c.points_cost} pts</span>
+                <button onClick={() => redeem(c.id)} className="px-3 py-2 rounded-lg bg-eco-green text-white text-sm hover:brightness-110">Redeem</button>
+              </div>
             </div>
-          </div>
-        ))}
+          ))}
+        </div>
+      </div>
+      <div className="lg:col-span-1">
+        {/* Clan system at right side of Rewards? The user asked at left side of rewards */}
       </div>
     </div>
   );
@@ -105,6 +110,8 @@ const ProfileView = ({ user }) => {
     </div>
   );
 };
+
+const ClanSystem = lazy(() => import('./ClanSystem'));
 
 const Dashboard = ({ currentUser, onLogout, setCurrentUser }) => {
   const [activeTab, setActiveTab] = useState('detection');
@@ -229,7 +236,19 @@ const Dashboard = ({ currentUser, onLogout, setCurrentUser }) => {
   } else if (activeTab === 'bounty') {
     main = <WasteBounty currentUser={currentUser} updatePoints={updatePoints} />;
   } else if (activeTab === 'rewards') {
-    main = <RewardsShop onRedeem={updatePoints} />;
+    main = (
+      <div className="grid gap-6 lg:grid-cols-3">
+        <div className="lg:col-span-2 order-2 lg:order-1">
+          <RewardsShop onRedeem={updatePoints} />
+        </div>
+        <div className="lg:col-span-1 order-1 lg:order-2">
+          <div className="rounded-2xl bg-white/5 border border-white/10 p-4">
+            <div className="text-gray-200 font-semibold mb-3">Clans</div>
+            <ClanSystem />
+          </div>
+        </div>
+      </div>
+    );
   } else {
     main = <ProfileView user={currentUser} />;
   }

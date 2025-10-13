@@ -1,6 +1,7 @@
 // src/components/WasteBounty.jsx
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, lazy, Suspense } from 'react';
+const LeaderboardAside = lazy(() => import('./LeaderboardAside'));
 
 // Defer EXIF parsing library to reduce initial bundle size
 let EXIFLibPromise;
@@ -504,7 +505,7 @@ const WasteBounty = ({ updatePoints }) => {
 
             {/* Report Waste Tab */}
             {activeTab === 'report' && (
-                <div className="space-y-6">
+                <div className="grid gap-6 lg:grid-cols-3">
                     <div className="bg-white/5 border border-white/10 rounded-xl p-6">
                         <h3 className="text-lg font-semibold text-gray-100 mb-4">Report a Public Waste Spot</h3>
                         <p className="text-gray-400 text-sm mb-4">
@@ -629,12 +630,20 @@ const WasteBounty = ({ updatePoints }) => {
                             </button>
                         </div>
                     </div>
+                    <div className="lg:col-span-1">
+                      <div className="rounded-xl bg-white/5 border border-white/10 p-4">
+                        <div className="text-gray-200 font-semibold mb-3">Leaderboard</div>
+                        <Suspense fallback={<div className="text-gray-400 text-sm">Loading…</div>}>
+                          <LeaderboardAside />
+                        </Suspense>
+                      </div>
+                    </div>
                 </div>
             )}
 
             {/* Active Bounties Tab */}
             {activeTab === 'bounties' && (
-                <div className="space-y-4">
+                <div className="grid gap-6 lg:grid-cols-3">
                     <div className="flex items-center justify-between">
                         <h3 className="text-lg font-semibold text-gray-100">Available Bounties in Your Area</h3>
                         <button
@@ -653,7 +662,7 @@ const WasteBounty = ({ updatePoints }) => {
                             <p className="text-sm mt-1">Be the first to report waste spots!</p>
                         </div>
                     ) : (
-                        <div className="grid gap-4">
+                        <div className="grid gap-4 lg:col-span-2 order-2 lg:order-1">
                             {bounties.map((bounty) => (
                                 <div key={bounty.id} className="bg-white/5 border border-white/10 rounded-lg p-4">
                                     <div className="flex items-start justify-between">
@@ -780,6 +789,14 @@ const WasteBounty = ({ updatePoints }) => {
                             ))}
                         </div>
                     )}
+                    <div className="lg:col-span-1 order-1 lg:order-2">
+                      <div className="rounded-xl bg-white/5 border border-white/10 p-4">
+                        <div className="text-gray-200 font-semibold mb-3">Leaderboard</div>
+                        <Suspense fallback={<div className="text-gray-400 text-sm">Loading…</div>}>
+                          <LeaderboardAside />
+                        </Suspense>
+                      </div>
+                    </div>
                 </div>
             )}
 
