@@ -30,6 +30,11 @@ const WelcomePage = ({ onGetStarted }) => {
             <span className="text-eco-green font-extrabold text-xl font-display">Bounty</span>
           </div>
         </div>
+        <nav className="hidden md:flex items-center gap-6 text-gray-300">
+          <a href="#how" className="hover:text-white transition">How it works</a>
+          <a href="#features" className="hover:text-white transition">Features</a>
+          <a href="#about" className="hover:text-white transition">About</a>
+        </nav>
         <button onClick={onGetStarted} className="relative group px-4 py-2 rounded-full bg-white/5 text-gray-200 border border-white/10 transition-all duration-300 hover:bg-white/10 hover:-translate-y-0.5">
           <span className="absolute inset-0 rounded-full bg-eco-green/20 blur opacity-0 group-hover:opacity-100 transition" />
           <span className="relative flex items-center gap-2">
@@ -43,14 +48,14 @@ const WelcomePage = ({ onGetStarted }) => {
       <section className="relative z-10 flex items-center justify-center px-6 md:px-12">
         <div className="text-center max-w-5xl w-full">
           <h1 className="text-[44px] md:text-[62px] leading-[1.05] font-black tracking-tight bg-clip-text text-transparent bg-[linear-gradient(180deg,#e5f8ef,rgba(255,255,255,0.55))] font-display [text-shadow:_0_8px_40px_rgba(16,185,129,0.12)] animate-hue">
-            Waste<span className="text-eco-green">Rewards</span>
+            Waste<span className="text-eco-green">Rewards</span> & Bounty
           </h1>
           <div className="mx-auto mt-3 h-[3px] w-28 rounded-full bg-gradient-to-r from-eco-green via-white/40 to-eco-accent animate-shimmer" />
 
-          {/* Glass info block with richer copy */}
+          {/* Glass info block with richer copy */
           <div className="mt-6 mx-auto max-w-3xl rounded-2xl bg-white/5 border border-white/10 p-5 backdrop-blur-md shadow-xl animate-fadeUp">
             <p className="text-[18px] md:text-[20px] text-gray-200/90">
-              Turn your everyday waste into real perks. Our <span className="text-eco-green font-semibold">AI</span> spots recyclable and hazardous items in your photos, instantly awards points, and lets you redeem eco-friendly rewards straight from your dashboard.
+              Turn your everyday waste into real perks. Our <span className="text-eco-green font-semibold">AI</span> spots recyclable and hazardous items in your photos, lets you <span className="text-eco-accent font-semibold">report waste hotspots</span> as bounties, coordinate cleanups with your city, and redeem eco-friendly rewards straight from your dashboard.
             </p>
             <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
               {['Fast detection','Privacy-first','Real rewards','Student friendly'].map((t,i)=> (
@@ -86,20 +91,70 @@ const WelcomePage = ({ onGetStarted }) => {
         </div>
       </section>
 
-      {/* How It Works */}
-      <section id="how" className="relative z-10 px-6 md:px-12 mt-16 md:mt-24">
-        <div className="grid md:grid-cols-3 gap-6 max-w-6xl mx-auto">
+      {/* Features */}
+      <section id="features" className="relative z-10 px-6 md:px-12 mt-12">
+        <div className="max-w-6xl mx-auto grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
           {[
-            { icon: '📸', title: 'Snap / Upload', desc: 'Upload waste images. Any angle, any lighting—our model gets it.' },
-            { icon: '🤖', title: 'AI Detects', desc: 'AI instantly identifies recyclable / hazardous items.' },
-            { icon: '💰', title: 'Earn & Redeem', desc: 'Score points and redeem coupons in the Rewards Shop.' },
+            { icon: '🧠', title: 'AI Waste Detection', desc: 'Detect recyclable, hazardous, and general waste in a snap.' },
+            { icon: '🗺️', title: 'Waste Bounty', desc: 'Report public waste spots and mobilize cleanups.' },
+            { icon: '🎁', title: 'Rewards Shop', desc: 'Redeem eco-friendly coupons with your points.' },
+            { icon: '🛡️', title: 'Clans & Leaderboard', desc: 'Team up, compete, and climb city ranks.' },
           ].map((f, i) => (
-            <div key={i} className="rounded-2xl bg-white/5 backdrop-blur border border-white/10 p-6 hover:bg-white/10 transition-colors animate-fadeUp" style={{ animationDelay: `${100 * (i + 1)}ms` }}>
-              <div className="text-3xl mb-3">{f.icon}</div>
+            <div key={i} className="rounded-2xl bg-white/5 backdrop-blur border border-white/10 p-5 hover:bg-white/10 transition-colors animate-fadeUp" style={{ animationDelay: `${80 * (i + 1)}ms` }}>
+              <div className="text-3xl mb-2">{f.icon}</div>
               <div className="text-gray-100 font-semibold text-lg font-display">{f.title}</div>
               <div className="text-gray-300/90 text-sm mt-1">{f.desc}</div>
             </div>
           ))}
+        </div>
+      </section>
+
+      {/* How It Works */}
+      <section id="how" className="relative z-10 px-6 md:px-12 mt-16 md:mt-24">
+        <div className="max-w-6xl mx-auto">
+          <div className="grid md:grid-cols-4 gap-6">
+            {[
+              { icon: '📸', title: 'Snap / Upload', desc: 'Upload waste photos or videos with location.' },
+              { icon: '🤖', title: 'AI Detects', desc: 'We classify items and verify disposal.' },
+              { icon: '🗺️', title: 'Create/Claim Bounty', desc: 'Report hotspots or claim nearby cleanups.' },
+              { icon: '💰', title: 'Earn & Redeem', desc: 'Get points for impact, redeem rewards.' },
+            ].map((f, i) => (
+              <div key={i} className="relative rounded-2xl bg-white/5 backdrop-blur border border-white/10 p-6 hover:bg-white/10 transition-colors animate-fadeUp" style={{ animationDelay: `${100 * (i + 1)}ms` }}>
+                <div className="flex items-center justify-between mb-3">
+                  <div className="text-3xl">{f.icon}</div>
+                  <div className="w-8 h-8 rounded-full bg-eco-green/20 border border-eco-green/30 text-eco-green flex items-center justify-center font-bold">{i+1}</div>
+                </div>
+                <div className="text-gray-100 font-semibold text-lg font-display">{f.title}</div>
+                <div className="text-gray-300/90 text-sm mt-1">{f.desc}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* About Us */}
+      <section id="about" className="relative z-10 px-6 md:px-12 mt-16 md:mt-24">
+        <div className="max-w-5xl mx-auto text-center">
+          <h2 className="text-gray-100 text-3xl md:text-4xl font-extrabold font-display">About Us</h2>
+          <p className="text-gray-300/90 mt-3 leading-relaxed">
+            We are a small team on a big mission: make recycling rewarding and
+            city cleanups collaborative. Waste Bounty connects AI-driven waste detection with
+            community action so every snap, report, and cleanup counts toward a cleaner planet.
+          </p>
+          <div className="grid sm:grid-cols-3 gap-4 mt-8 text-left">
+            {[{
+              t:'Our Mission', d:'Turn responsible disposal into a habit powered by instant feedback and rewards.'
+            },{
+              t:'Our Approach', d:'Blend computer vision, location awareness, and gamified incentives to drive action.'
+            },{
+              t:'Community', d:'Clans, leaderboards, and city chats keep people connected and motivated.'
+            }].map((c,i)=> (
+              <div key={i} className="rounded-2xl bg-white/5 border border-white/10 p-5">
+                <div className="text-gray-100 font-semibold text-lg font-display">{c.t}</div>
+                <div className="text-gray-300/90 text-sm mt-1">{c.d}</div>
+              </div>
+            ))}
+          </div>
         </div>
       </section>
 
