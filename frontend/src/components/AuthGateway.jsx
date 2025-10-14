@@ -67,16 +67,24 @@ const Login = ({ onLoginSuccess, onForgot }) => {
 };
 
 
-// Lightweight auto-suggest input for locations
+// Lightweight auto-suggest input for locations with A–Z quick filter
 const AutoSuggestInput = ({ label, placeholder, value, onChange, onSelect, suggestions, inputProps = {} }) => {
     const [open, setOpen] = useState(false);
+    const [activeLetter, setActiveLetter] = useState(''); // '', 'A'..'Z'
+
+    const letters = useMemo(() => 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split(''), []);
+
     const filtered = useMemo(() => {
-        const q = (value || '').toLowerCase();
-        if (q.length < 2) return [];
-        return suggestions
-            .filter((s) => s.toLowerCase().startsWith(q))
-            .slice(0, 10);
-    }, [value, suggestions]);
+        const q = (value || '').trim().toLowerCase();
+        let list = Array.isArray(suggestions) ? suggestions : [];
+        if (activeLetter) {
+            list = list.filter((s) => (s || '').toLowerCase().startsWith(activeLetter.toLowerCase()));
+            if (q) list = list.filter((s) => s.toLowerCase().startsWith(q));
+            return list.slice(0, 15);
+        }
+        if (!q) return [];
+        return list.filter((s) => s.toLowerCase().startsWith(q)).slice(0, 15);
+    }, [value, suggestions, activeLetter]);
 
     return (
         <div className="relative">
@@ -91,19 +99,48 @@ const AutoSuggestInput = ({ label, placeholder, value, onChange, onSelect, sugge
                 className="w-full px-4 py-3 rounded-xl bg-white/5 border border-white/10 text-gray-100 placeholder:text-gray-400 focus:outline-none focus:border-eco-green focus:ring-2 focus:ring-eco-green/30 transition"
                 {...inputProps}
             />
-            {open && filtered.length > 0 && (
-                <div className="absolute z-20 mt-1 w-full max-h-56 overflow-auto rounded-lg bg-[#0f172a]/95 border border-white/10 shadow-2xl">
-                    {filtered.map((s, idx) => (
-                        <button
-                            key={idx}
-                            type="button"
-                            onMouseDown={(e) => e.preventDefault()}
-                            onClick={() => { (onSelect ? onSelect(s) : onChange(s)); setOpen(false); }}
-                            className="w-full text-left px-3 py-2 text-sm text-gray-200 hover:bg-white/10"
-                        >
-                            {s}
-                        </button>
-                    ))}
+            {open && (
+                <div className="absolute z-20 mt-1 w-full max-h-64 overflow-auto rounded-lg bg-[#0f172a]/95 border border-white/10 shadow-2xl">
+                    {/* A–Z letter bar */}
+                    <div className="sticky top-0 bg-[#0f172a]/95 border-b border-white/10 p-2">
+                        <div className="flex flex-wrap gap-1">
+                            <button
+                                type="button"
+                                onMouseDown={(e) => e.preventDefault()}
+                                onClick={() => setActiveLetter('')}
+                                className={`px-2 py-1 rounded text-xs ${activeLetter==='' ? 'bg-eco-green text-eco-dark' : 'bg-white/5 text-gray-200 hover:bg-white/10'}`}
+                            >
+                                All
+                            </button>
+                            {letters.map((L) => (
+                                <button
+                                    key={L}
+                                    type="button"
+                                    onMouseDown={(e) => e.preventDefault()}
+                                    onClick={() => { setActiveLetter(L); setOpen(true); }}
+                                    className={`w-7 text-center px-1 py-1 rounded text-xs ${activeLetter===L ? 'bg-eco-green text-eco-dark' : 'bg-white/5 text-gray-200 hover:bg-white/10'}`}
+                                >
+                                    {L}
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+                    {/* Suggestions */}
+                    {filtered.length > 0 ? (
+                        filtered.map((s, idx) => (
+                            <button
+                                key={`${s}-${idx}`}
+                                type="button"
+                                onMouseDown={(e) => e.preventDefault()}
+                                onClick={() => { (onSelect ? onSelect(s) : onChange(s)); setOpen(false); }}
+                                className="w-full text-left px-3 py-2 text-sm text-gray-200 hover:bg-white/10"
+                            >
+                                {s}
+                            </button>
+                        ))
+                    ) : (
+                        <div className="px-3 py-2 text-sm text-gray-400">No matches</div>
+                    )}
                 </div>
             )}
         </div>

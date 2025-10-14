@@ -2535,136 +2535,146 @@ def verify_cleanup() -> Tuple[Any, int]:
     """
     Verify cleanup submission using Gemini AI only (location checks removed).
     """
-	username = parse_username_from_auth()
-	if not username:
-		return jsonify({"error": "missing auth token"}), 401
 
-	# Get bounty ID from form data
-	bounty_id = request.form.get('bounty_id')
-	if not bounty_id:
-		return jsonify({"error": "bounty_id is required"}), 400
+    username = parse_username_from_auth()
+    if not username:
+        return jsonify({"error": "missing auth token"}), 401
 
-	# Check for required files
-	if 'before_cleanup_photo' not in request.files or 'after_cleanup_photo' not in request.files:
-		return jsonify({"error": "both before and after cleanup photos are required"}), 400
-	
-	before_file = request.files['before_cleanup_photo']
-	after_file = request.files['after_cleanup_photo']
-	
-	if before_file.filename == '' or after_file.filename == '':
-		return jsonify({"error": "empty filenames"}), 400
+    # Get bounty ID from form data
+    bounty_id = request.form.get('bounty_id')
+    if not bounty_id:
+        return jsonify({"error": "bounty_id is required"}), 400
 
-	# Read and persist files (ensure both are saved correctly)
-	before_bytes = before_file.read()
-	after_bytes = after_file.read()
+    # Check for required files
+    if 'before_cleanup_photo' not in request.files or 'after_cleanup_photo' not in request.files:
+        return jsonify({"error": "both before and after cleanup photos are required"}), 400
 
-	# Create uploads directory
-	uploads_dir = os.path.join(os.path.dirname(__file__), 'uploads')
-	os.makedirs(uploads_dir, exist_ok=True)
+    before_file = request.files['before_cleanup_photo']
+    after_file = request.files['after_cleanup_photo']
 
-	# Build filenames
-	before_filename = f"before_{int(time.time())}.jpg"
-	after_filename = f"after_{int(time.time())}.jpg"
-	before_path = os.path.join(uploads_dir, before_filename)
-	after_path = os.path.join(uploads_dir, after_filename)
+    if before_file.filename == '' or after_file.filename == '':
+        return jsonify({"error": "empty filenames"}), 400
 
-	# Save both images to disk
-	with open(before_path, 'wb') as f:
-		f.write(before_bytes)
-	with open(after_path, 'wb') as f:
-		f.write(after_bytes)
-	
+    # Read and persist files (ensure both are saved correctly)
+    before_bytes = before_file.read()
+    after_bytes = after_file.read()
+
+    # Create uploads directory
+    uploads_dir = os.path.join(os.path.dirname(__file__), 'uploads')
+    os.makedirs(uploads_dir, exist_ok=True)
+
+    # Build filenames
+    before_filename = f"before_{int(time.time())}.jpg"
+    after_filename = f"after_{int(time.time())}.jpg"
+    before_path = os.path.join(uploads_dir, before_filename)
+    after_path = os.path.join(uploads_dir, after_filename)
+
+    # Save both images to disk
+    with open(before_path, 'wb') as f:
+        f.write(before_bytes)
+    with open(after_path, 'wb') as f:
+        f.write(after_bytes)
+
     # Get bounty information
-	with get_db_connection() as conn:
-		row = conn.execute('SELECT latitude, longitude, waste_image_url, status FROM waste_bounty WHERE id = ?', (bounty_id,)).fetchone()
-		if row is None:
-			return jsonify({"error": "bounty not found"}), 404
-		
+    with get_db_connection() as conn:
+        row = conn.execute(
+            'SELECT latitude, longitude, waste_image_url, status FROM waste_bounty WHERE id = ?',
+            (bounty_id,),
+        ).fetchone()
+        if row is None:
+            return jsonify({"error": "bounty not found"}), 404
+
         bounty_lat, bounty_lon, original_image_url, status = row[0], row[1], row[2], row[3]
-		
-		if status != 'REPORTED':
-			return jsonify({"error": "bounty is no longer available"}), 400
-	
-	# Load original image for comparison
-	original_image_path = os.path.join(os.path.dirname(__file__), original_image_url.lstrip('/'))
-	if not os.path.exists(original_image_path):
-		return jsonify({"error": "original bounty image not found"}), 500
-	
+        if status != 'REPORTED':
+            return jsonify({"error": "bounty is no longer available"}), 400
+
+    # Load original image for comparison
+    original_image_path = os.path.join(os.path.dirname(__file__), original_image_url.lstrip('/'))
+    if not os.path.exists(original_image_path):
+        return jsonify({"error": "original bounty image not found"}), 500
+
     # Optional: Development/testing mode to bypass Gemini scene check (server-controlled only)
     dev_mode = (os.environ.get('DEV_MODE_CLEANUP') == '1')
 
-	# Convert images to OpenCV format for Gemini analysis
-	original_image = cv2.imread(original_image_path)
-	before_image = cv2.imread(before_path)
-	after_image = cv2.imread(after_path)
-	
+    # Convert images to OpenCV format for Gemini analysis
+    original_image = cv2.imread(original_image_path)
+    before_image = cv2.imread(before_path)
+    after_image = cv2.imread(after_path)
+
     # Verify cleanup with Gemini AI
     if not GEMINI_AVAILABLE and not dev_mode:
         return jsonify({
             "error": "Gemini verification is not available on the server. Set GEMINI_API_KEY to enable verification."
         }), 503
 
-    verification_result = verify_cleanup_with_gemini(original_image, before_image, after_image) if not dev_mode else {
-        "scene_match": True,
-        "waste_present_before": True,
-        "cleanup_verified": True,
-        "fallback": True
-    }
-	
-	# Check if all three conditions are met
-	scene_match = verification_result.get("scene_match", False)
-	waste_present_before = verification_result.get("waste_present_before", False)
-	cleanup_verified = verification_result.get("cleanup_verified", False)
-	
-	# Get user info
-	with get_db_connection() as conn:
-		row = conn.execute('SELECT id, total_points FROM users WHERE username = ?', (username,)).fetchone()
-		if row is None:
-			return jsonify({"error": "user not found"}), 404
-		user_id, current_points = int(row[0]), int(row[1])
-	
-	# Process verification result
+    verification_result = (
+        verify_cleanup_with_gemini(original_image, before_image, after_image)
+        if not dev_mode
+        else {
+            "scene_match": True,
+            "waste_present_before": True,
+            "cleanup_verified": True,
+            "fallback": True,
+        }
+    )
+
+    # Check if all three conditions are met
+    scene_match = verification_result.get("scene_match", False)
+    waste_present_before = verification_result.get("waste_present_before", False)
+    cleanup_verified = verification_result.get("cleanup_verified", False)
+
+    # Get user info
+    with get_db_connection() as conn:
+        row = conn.execute('SELECT id, total_points FROM users WHERE username = ?', (username,)).fetchone()
+        if row is None:
+            return jsonify({"error": "user not found"}), 404
+        user_id, current_points = int(row[0]), int(row[1])
+
+    # Process verification result
     if scene_match and waste_present_before and cleanup_verified:
-		# Cleanup approved - update bounty and award points
-		with get_db_connection() as conn:
-			# Get bounty points
-			bounty_row = conn.execute('SELECT bounty_points FROM waste_bounty WHERE id = ?', (bounty_id,)).fetchone()
-			bounty_points = int(bounty_row[0]) if bounty_row else 200
-			
-			# Update bounty status and persist image URLs
-			conn.execute(
-				'UPDATE waste_bounty SET status = "CLOSED", claimed_by_user_id = ?, claimed_at = CURRENT_TIMESTAMP, completed_at = CURRENT_TIMESTAMP, before_image_url = ?, after_image_url = ? WHERE id = ?',
-				(user_id, f"/uploads/{before_filename}", f"/uploads/{after_filename}", bounty_id)
-			)
-			
-			# Award points to user
-			new_total = current_points + bounty_points
-			conn.execute('UPDATE users SET total_points = ? WHERE id = ?', (new_total, user_id))
-			conn.execute('INSERT INTO transactions (user_id, points_change, reason) VALUES (?, ?, ?)', (user_id, bounty_points, f'Bounty Cleanup Completed - Bounty #{bounty_id}'))
-			conn.commit()
-		
+        # Cleanup approved - update bounty and award points
+        with get_db_connection() as conn:
+            # Get bounty points
+            bounty_row = conn.execute('SELECT bounty_points FROM waste_bounty WHERE id = ?', (bounty_id,)).fetchone()
+            bounty_points = int(bounty_row[0]) if bounty_row else 200
+
+            # Update bounty status and persist image URLs
+            conn.execute(
+                'UPDATE waste_bounty SET status = "CLOSED", claimed_by_user_id = ?, claimed_at = CURRENT_TIMESTAMP, completed_at = CURRENT_TIMESTAMP, before_image_url = ?, after_image_url = ? WHERE id = ?',
+                (user_id, f"/uploads/{before_filename}", f"/uploads/{after_filename}", bounty_id),
+            )
+
+            # Award points to user
+            new_total = current_points + bounty_points
+            conn.execute('UPDATE users SET total_points = ? WHERE id = ?', (new_total, user_id))
+            conn.execute(
+                'INSERT INTO transactions (user_id, points_change, reason) VALUES (?, ?, ?)',
+                (user_id, bounty_points, f'Bounty Cleanup Completed - Bounty #{bounty_id}')
+            )
+            conn.commit()
+
         return jsonify({
             "message": "Cleanup verified successfully! Points awarded.",
             "points_awarded": bounty_points,
             "total_points": new_total,
             "verification_result": verification_result,
-            "dev_mode": dev_mode
+            "dev_mode": dev_mode,
         }), 200
-	else:
-		# Cleanup not approved
-		reasons = []
-		if not scene_match:
-			reasons.append("Scene mismatch - photos don't show the same location")
-		if not waste_present_before:
-			reasons.append("No significant waste detected in before photo")
-		if not cleanup_verified:
-			reasons.append("Cleanup not verified - waste still present in after photo")
-		
-		return jsonify({
-			"message": "Cleanup verification failed",
-			"reasons": reasons,
-			"verification_result": verification_result
-		}), 400
+    else:
+        # Cleanup not approved
+        reasons = []
+        if not scene_match:
+            reasons.append("Scene mismatch - photos don't show the same location")
+        if not waste_present_before:
+            reasons.append("No significant waste detected in before photo")
+        if not cleanup_verified:
+            reasons.append("Cleanup not verified - waste still present in after photo")
+
+        return jsonify({
+            "message": "Cleanup verification failed",
+            "reasons": reasons,
+            "verification_result": verification_result,
+        }), 400
 
 
 @app.route('/api/detect', methods=['POST'])
