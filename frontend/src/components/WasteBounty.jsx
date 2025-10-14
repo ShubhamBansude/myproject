@@ -787,7 +787,7 @@ const WasteBounty = ({ updatePoints, currentUser }) => {
                             Cleanup: Bounty #{selectedBounty.id}
                         </h3>
                         <p className="text-gray-400 text-sm mb-4">
-                            Take two photos: one before cleanup and one after. Both must contain GPS location data.
+                            Take two photos: one before cleanup and one after. Both must contain GPS location data and be within 100 meters of the bounty location.
                         </p>
 
                         <div className="space-y-6">

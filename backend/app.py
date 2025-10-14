@@ -2159,13 +2159,13 @@ def verify_cleanup() -> Tuple[Any, int]:
 		if status != 'REPORTED':
 			return jsonify({"error": "bounty is no longer available"}), 400
 	
-	# Validate GPS coordinates are within 5-10 meter radius
+	# Validate GPS coordinates are within 100 meter radius
 	before_distance = calculate_distance(bounty_lat, bounty_lon, before_lat, before_lon)
 	after_distance = calculate_distance(bounty_lat, bounty_lon, after_lat, after_lon)
 	
-	if before_distance > 10 or after_distance > 10:
+	if before_distance > 100 or after_distance > 100:
 		return jsonify({
-			"error": f"Photos must be taken within 10 meters of the bounty location. Before: {before_distance:.1f}m, After: {after_distance:.1f}m"
+			"error": f"Photos must be taken within 100 meters of the bounty location. Before: {before_distance:.1f}m, After: {after_distance:.1f}m"
 		}), 400
 	
 	# Load original image for comparison
