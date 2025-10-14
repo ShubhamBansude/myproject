@@ -1,7 +1,7 @@
 // src/components/Dashboard.jsx
 
 import React, { useState, useEffect, lazy, Suspense, useRef } from 'react';
-import { apiUrl } from '../lib/api';
+import { apiUrl, API_BASE_URL } from '../lib/api';
 
 // Lazy-load heavy tab panels to split Dashboard chunk
 const EarnPoints = lazy(() => import('./EarnPoints'));
@@ -32,6 +32,20 @@ const RewardsShop = ({ onRedeem }) => {
       }
     };
     if (token) load();
+  }, [token]);
+
+  // On mount/load, check if user already has a certificate issued
+  useEffect(() => {
+    const loadMyCert = async () => {
+      try {
+        const res = await fetch(apiUrl('/api/my_certificate'), { headers: { Authorization: `Bearer ${token}` } });
+        const data = await res.json();
+        if (res.ok && data?.certificate_url) {
+          setCertUrl(data.certificate_url);
+        }
+      } catch {/* noop */}
+    };
+    if (token) loadMyCert();
   }, [token]);
 
   const redeem = async (couponId) => {
@@ -89,24 +103,40 @@ const RewardsShop = ({ onRedeem }) => {
               <div className="text-sm text-gray-300">Personalized certificate with your username</div>
             </div>
           </div>
+          {certUrl && (
+            <a
+              href={`${API_BASE_URL}${certUrl.replace('/certificates/', '/certificates/download/')}`}
+              className="absolute top-4 right-4 px-2 py-1 rounded-md bg-eco-green/90 text-eco-dark border border-eco-green/40 text-xs hover:brightness-110"
+              title="Download certificate"
+            >
+              📥
+            </a>
+          )}
           <div className="mt-3 text-xs text-gray-400">
             Features themed design with cleanliness and recycling motifs, Swachh Bharat Mission logo and VPKBIET logo.
           </div>
           <div className="mt-3 flex items-center justify-between">
-            <span className="px-3 py-1 rounded-full bg-eco-green/20 text-eco-green border border-eco-green/30 text-sm">1500 pts</span>
-            <button onClick={redeemCertificate} disabled={redeemingCert} className="px-3 py-2 rounded-lg bg-eco-green text-white text-sm hover:brightness-110 disabled:opacity-60">
-              {redeemingCert ? 'Generating…' : 'Redeem'}
-            </button>
+            <span className="px-3 py-1 rounded-full bg-eco-green/20 text-eco-green border border-eco-green/30 text-sm">500 pts</span>
+            {!certUrl ? (
+              <button onClick={redeemCertificate} disabled={redeemingCert} className="px-3 py-2 rounded-lg bg-eco-green text-white text-sm hover:brightness-110 disabled:opacity-60">
+                {redeemingCert ? 'Generating…' : 'Get Certificate'}
+              </button>
+            ) : (
+              <div className="flex gap-2">
+                <a href={`${API_BASE_URL}${certUrl}`} target="_blank" rel="noreferrer" className="px-3 py-2 rounded-md bg-white/10 border border-white/20 text-gray-100 text-sm hover:bg-white/20">Open</a>
+                <a href={`${API_BASE_URL}${certUrl.replace('/certificates/', '/certificates/download/')}`} download className="px-3 py-2 rounded-md bg-eco-green text-eco-dark text-sm hover:brightness-110">Download</a>
+              </div>
+            )}
           </div>
           {certUrl && (
             <div className="mt-4 p-3 rounded-lg bg-black/30 border border-white/10">
               <div className="text-gray-200 text-sm font-medium mb-2">Your Certificate</div>
               <div className="flex gap-2">
-                <a href={certUrl} target="_blank" rel="noreferrer" className="px-3 py-2 rounded-md bg-white/10 border border-white/20 text-gray-100 text-sm hover:bg-white/20">Open</a>
-                <a href={certUrl.replace('/certificates/', '/certificates/download/')} className="px-3 py-2 rounded-md bg-eco-green text-eco-dark text-sm hover:brightness-110">Download</a>
+                <a href={`${API_BASE_URL}${certUrl}`} target="_blank" rel="noreferrer" className="px-3 py-2 rounded-md bg-white/10 border border-white/20 text-gray-100 text-sm hover:bg-white/20">Open</a>
+                <a href={`${API_BASE_URL}${certUrl.replace('/certificates/', '/certificates/download/')}`} download className="px-3 py-2 rounded-md bg-eco-green text-eco-dark text-sm hover:brightness-110">Download</a>
               </div>
               <div className="mt-3 h-48 bg-white/5 border border-white/10 rounded-md overflow-hidden">
-                <iframe title="certificate" src={certUrl} className="w-full h-full"></iframe>
+                <iframe title="certificate" src={`${API_BASE_URL}${certUrl}`} className="w-full h-full"></iframe>
               </div>
             </div>
           )}
