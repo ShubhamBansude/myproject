@@ -974,10 +974,20 @@ def init_db() -> None:
 				'  payload TEXT,'
 				'  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,'
 				'  read_at DATETIME,'
+				'  context_bounty_id INTEGER,'
 				'  FOREIGN KEY(user_id) REFERENCES users(id)'
 				')'
 			)
 		)
+		# Add new columns to notifications if missing (for upgrades)
+		cursor = conn.execute('PRAGMA table_info(notifications)')
+		n_columns = [column[1] for column in cursor.fetchall()]
+		if 'context_bounty_id' not in n_columns:
+			conn.execute('ALTER TABLE notifications ADD COLUMN context_bounty_id INTEGER')
+			try:
+				conn.execute('CREATE INDEX IF NOT EXISTS idx_notifications_user_bounty ON notifications(user_id, context_bounty_id)')
+			except Exception:
+				pass
 		conn.commit()
 
 		# Email OTP table for password reset and username change
@@ -1563,12 +1573,13 @@ def create_bounty() -> Tuple[Any, int]:
 	else:
 		print(f"Reverse geocoding successful: {address_data}")
 	
-	# Get user info
+	# Get user info (id and normalized location)
 	with get_db_connection() as conn:
-		row = conn.execute('SELECT id FROM users WHERE username = ?', (username,)).fetchone()
+		row = conn.execute('SELECT id, country, state, city FROM users WHERE username = ?', (username,)).fetchone()
 		if row is None:
 			return jsonify({"error": "user not found"}), 404
 		user_id = int(row[0])
+		user_country, user_state, user_city = row[1], row[2], row[3]
 	
 	# Save image to a temporary location (in production, use cloud storage)
 	image_filename = f"bounty_{user_id}_{int(time.time())}.jpg"
@@ -1590,22 +1601,23 @@ def create_bounty() -> Tuple[Any, int]:
 		return jsonify({"error": "Image does not appear to show a waste area. Please capture a clear scene with visible waste in a public place."}), 400
 
 	# Prevent duplicate bounties for the same coordinates (within ~20m)
+	# Compare against all active bounties to avoid city name mismatches blocking duplicate detection
 	with get_db_connection() as conn:
 		rows = conn.execute(
-			'SELECT id, latitude, longitude FROM waste_bounty WHERE status = "REPORTED" AND TRIM(LOWER(city)) = TRIM(LOWER(?))',
-			(address_data['city'],)
+			'SELECT id, latitude, longitude FROM waste_bounty WHERE status = "REPORTED"'
 		).fetchall()
 		for r in rows:
 			existing_lat, existing_lon = float(r[1]), float(r[2])
 			if calculate_distance(existing_lat, existing_lon, latitude, longitude) <= 20:
 				return jsonify({"error": "Bounty is already raised for this location."}), 409
 
-	# Create bounty record
+	# Create bounty record - store reporter's normalized location for consistent city matching
 	with get_db_connection() as conn:
-		conn.execute(
+		cur = conn.execute(
 			'INSERT INTO waste_bounty (reporter_user_id, latitude, longitude, country, state, city, waste_image_url) VALUES (?, ?, ?, ?, ?, ?, ?)',
-			(user_id, latitude, longitude, address_data['country'], address_data['state'], address_data['city'], f"/uploads/{image_filename}")
+			(user_id, latitude, longitude, user_country, user_state, user_city, f"/uploads/{image_filename}")
 		)
+		bounty_id = cur.lastrowid
 		conn.commit()
 
 	# Fan-out notification to users in the same city (excluding reporter)
@@ -1613,7 +1625,7 @@ def create_bounty() -> Tuple[Any, int]:
 		with get_db_connection() as conn:
 			rows = conn.execute(
 				'SELECT username FROM users WHERE TRIM(LOWER(country)) = TRIM(LOWER(?)) AND TRIM(LOWER(state)) = TRIM(LOWER(?)) AND TRIM(LOWER(city)) = TRIM(LOWER(?)) AND username <> ?',
-				(address_data['country'], address_data['state'], address_data['city'], username)
+				(user_country, user_state, user_city, username)
 			).fetchall()
 			# Persist notifications and push to SSE subscribers
 			for r in rows:
@@ -1625,22 +1637,23 @@ def create_bounty() -> Tuple[Any, int]:
 				recipient_id = int(user_row[0])
 				payload = {
 					"kind": "BOUNTY_CREATED",
-					"city": address_data['city'],
-					"state": address_data['state'],
-					"country": address_data['country'],
+					"city": user_city,
+					"state": user_state,
+					"country": user_country,
 					"latitude": latitude,
 					"longitude": longitude,
 					"image_url": f"/uploads/{image_filename}"
 				}
 				conn.execute(
-					'INSERT INTO notifications (user_id, type, title, message, city, payload) VALUES (?, ?, ?, ?, ?, ?)',
+					'INSERT INTO notifications (user_id, type, title, message, city, payload, context_bounty_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
 					(
 						recipient_id,
 						'BOUNTY_CREATED',
 						'New bounty in your city',
-						f"New waste bounty reported in {address_data['city']}, {address_data['state']}",
-						address_data['city'],
-						json.dumps(payload)
+						f"New waste bounty reported in {user_city}, {user_state}",
+						user_city,
+						json.dumps(payload),
+						bounty_id
 					)
 				)
 				# Push to live subscribers
@@ -1648,8 +1661,8 @@ def create_bounty() -> Tuple[Any, int]:
 					"id": None,
 					"type": "BOUNTY_CREATED",
 					"title": "New bounty in your city",
-					"message": f"New waste bounty reported in {address_data['city']}, {address_data['state']}",
-					"city": address_data['city'],
+					"message": f"New waste bounty reported in {user_city}, {user_state}",
+					"city": user_city,
 					"payload": payload,
 					"created_at": time.strftime('%Y-%m-%d %H:%M:%S')
 				})
@@ -1662,9 +1675,9 @@ def create_bounty() -> Tuple[Any, int]:
 		"location": {
 			"latitude": latitude,
 			"longitude": longitude,
-			"country": address_data['country'],
-			"state": address_data['state'],
-			"city": address_data['city']
+			"country": user_country,
+			"state": user_state,
+			"city": user_city
 		}
 	}), 201
 
@@ -1678,28 +1691,48 @@ def get_bounties() -> Tuple[Any, int]:
 	if not username:
 		return jsonify({"error": "missing auth token"}), 401
 
-	# Get user's location
+	# Get user's id and location
 	with get_db_connection() as conn:
-		row = conn.execute('SELECT country, state, city FROM users WHERE username = ?', (username,)).fetchone()
+		row = conn.execute('SELECT id, country, state, city FROM users WHERE username = ?', (username,)).fetchone()
 		if row is None:
 			return jsonify({"error": "user not found"}), 404
-		user_country, user_state, user_city = row[0], row[1], row[2]
+		user_id, user_country, user_state, user_city = int(row[0]), row[1], row[2], row[3]
 	
-	# Get active bounties strictly in user's city
+	# Get active bounties in user's city OR those created by the user
 	with get_db_connection() as conn:
+		# Align existing active bounty locations to reporter's normalized profile location
+		try:
+			conn.execute(
+				'UPDATE waste_bounty '
+				'SET country = (SELECT country FROM users u WHERE u.id = reporter_user_id), '
+				'    state = (SELECT state FROM users u WHERE u.id = reporter_user_id), '
+				'    city = (SELECT city FROM users u WHERE u.id = reporter_user_id) '
+				'WHERE status = "REPORTED" '
+				'  AND EXISTS (SELECT 1 FROM users u WHERE u.id = reporter_user_id '
+				'    AND (TRIM(LOWER(u.country)) <> TRIM(LOWER(waste_bounty.country)) '
+				'      OR TRIM(LOWER(u.state)) <> TRIM(LOWER(waste_bounty.state)) '
+				'      OR TRIM(LOWER(u.city)) <> TRIM(LOWER(waste_bounty.city))))'
+			)
+			conn.commit()
+		except Exception as e:
+			print(f"Bounty location alignment skipped due to error: {e}")
+
 		rows = conn.execute(
-			'SELECT '\
-			'  b.id, b.latitude, b.longitude, b.country, b.state, b.city, '\
-			'  b.bounty_points, b.waste_image_url, b.created_at, b.before_image_url, b.after_image_url, '\
-			'  u.username AS reporter_username '\
-			'FROM waste_bounty b '\
-			'JOIN users u ON u.id = b.reporter_user_id '\
-			'WHERE b.status = "REPORTED" '\
-			'  AND TRIM(LOWER(b.country)) = TRIM(LOWER(?)) '\
-			'  AND TRIM(LOWER(b.state)) = TRIM(LOWER(?)) '\
-			'  AND TRIM(LOWER(b.city)) = TRIM(LOWER(?)) '\
+			'SELECT '
+			'  b.id, b.latitude, b.longitude, b.country, b.state, b.city, '
+			'  b.bounty_points, b.waste_image_url, b.created_at, b.before_image_url, b.after_image_url, '
+			'  u.username AS reporter_username '
+			'FROM waste_bounty b '
+			'JOIN users u ON u.id = b.reporter_user_id '
+			'WHERE b.status = "REPORTED" '
+			'  AND ( '
+			'    (TRIM(LOWER(b.country)) = TRIM(LOWER(?)) '
+			'     AND TRIM(LOWER(b.state)) = TRIM(LOWER(?)) '
+			'     AND TRIM(LOWER(b.city)) = TRIM(LOWER(?))) '
+			'    OR b.reporter_user_id = ? '
+			'  ) '
 			'ORDER BY b.created_at DESC',
-			(user_country, user_state, user_city)
+			(user_country, user_state, user_city, user_id)
 		).fetchall()
 		print(f"Found {len(rows)} bounties for user city: {user_city}")
 		
@@ -1866,10 +1899,54 @@ def list_notifications() -> Tuple[Any, int]:
         return jsonify({"error": "unauthorized"}), 401
     limit = int(request.args.get('limit', '50'))
     with get_db_connection() as conn:
-        row = conn.execute('SELECT id FROM users WHERE username = ?', (username,)).fetchone()
+        row = conn.execute('SELECT id, country, state, city FROM users WHERE username = ?', (username,)).fetchone()
         if row is None:
             return jsonify({"error": "user not found"}), 404
         user_id = int(row[0])
+        user_country, user_state, user_city = row[1], row[2], row[3]
+
+        # Backfill: ensure user has notifications for currently active bounties in their city
+        try:
+            bounty_rows = conn.execute(
+                'SELECT id, latitude, longitude FROM waste_bounty '
+                'WHERE status = "REPORTED" '
+                '  AND TRIM(LOWER(country)) = TRIM(LOWER(?)) '
+                '  AND TRIM(LOWER(state)) = TRIM(LOWER(?)) '
+                '  AND TRIM(LOWER(city)) = TRIM(LOWER(?)) '
+                '  AND reporter_user_id <> ?',
+                (user_country, user_state, user_city, user_id)
+            ).fetchall()
+            for b in bounty_rows:
+                b_id = int(b[0])
+                exists = conn.execute(
+                    'SELECT 1 FROM notifications WHERE user_id = ? AND context_bounty_id = ? LIMIT 1',
+                    (user_id, b_id)
+                ).fetchone()
+                if exists is None:
+                    payload = {
+                        "kind": "BOUNTY_CREATED",
+                        "city": user_city,
+                        "state": user_state,
+                        "country": user_country,
+                        "latitude": float(b[1]),
+                        "longitude": float(b[2])
+                    }
+                    conn.execute(
+                        'INSERT INTO notifications (user_id, type, title, message, city, payload, context_bounty_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                        (
+                            user_id,
+                            'BOUNTY_CREATED',
+                            'New bounty in your city',
+                            f'New waste bounty reported in {user_city}, {user_state}',
+                            user_city,
+                            json.dumps(payload),
+                            b_id
+                        )
+                    )
+            conn.commit()
+        except Exception as e:
+            print(f"Backfill notifications error for {username}: {e}")
+
         rows = conn.execute(
             'SELECT id, type, title, message, city, payload, created_at, read_at FROM notifications WHERE user_id = ? ORDER BY id DESC LIMIT ?',
             (user_id, limit)
