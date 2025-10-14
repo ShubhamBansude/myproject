@@ -1585,7 +1585,7 @@ def create_bounty() -> Tuple[Any, int]:
 						recipient_id,
 						'BOUNTY_CREATED',
 						'New bounty in your city',
-						f'New waste bounty reported in {address_data['city']}, {address_data['state']}',
+						f"New waste bounty reported in {address_data['city']}, {address_data['state']}",
 						address_data['city'],
 						json.dumps(payload)
 					)
