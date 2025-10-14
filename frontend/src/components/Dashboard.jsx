@@ -68,7 +68,7 @@ const RewardsShop = ({ onRedeem }) => {
   );
 };
 
-const ProfileView = ({ user, setCurrentUser }) => {
+const ProfileView = ({ user, setCurrentUser, lifetimePoints }) => {
   const [openChange, setOpenChange] = useState(false);
   const [email, setEmail] = useState(user.email || '');
   const [newUsername, setNewUsername] = useState('');
@@ -151,6 +151,10 @@ const ProfileView = ({ user, setCurrentUser }) => {
       <div className="rounded-xl bg-white/5 border border-white/10 p-4">
         <div className="text-gray-400 text-sm">Total Points</div>
         <div className="text-gray-100 text-xl font-semibold">{user.total_points}</div>
+      </div>
+      <div className="rounded-xl bg-white/5 border border-white/10 p-4">
+        <div className="text-gray-400 text-sm">Lifetime Points</div>
+        <div className="text-gray-100 text-xl font-semibold">{lifetimePoints ?? 0}</div>
       </div>
       <div className="rounded-xl bg-white/5 border border-white/10 p-4">
         <div className="text-gray-400 text-sm">Email</div>
@@ -312,7 +316,7 @@ const Dashboard = ({ currentUser, onLogout, setCurrentUser }) => {
   } else if (activeTab === 'rewards') {
     main = <RewardsShop onRedeem={updatePoints} />;
   } else {
-    main = <ProfileView user={currentUser} setCurrentUser={setCurrentUser} />;
+    main = <ProfileView user={currentUser} setCurrentUser={setCurrentUser} lifetimePoints={stats.lifetime_points} />;
   }
 
   const progressA = 75;
@@ -436,19 +440,7 @@ const Dashboard = ({ currentUser, onLogout, setCurrentUser }) => {
             </div>
           </div>
 
-          {activeTab === 'rewards' && (
-            <div className="pointer-events-none absolute top-1/2 right-4 -translate-y-1/2 flex items-start gap-6 z-10">
-              {/* Two horizontal bars */}
-              <div className="flex-1 space-y-3">
-                <div className="h-6 rounded-full bg-white/5 border border-white/10 overflow-hidden">
-                  <div className="h-full bg-gradient-to-r from-eco-green to-emerald-400" style={{ width: `${progressA}%` }} />
-                </div>
-                <div className="h-6 rounded-full bg-white/5 border border-white/10 overflow-hidden">
-                  <div className="h-full bg-gradient-to-r from-amber-400 to-yellow-300" style={{ width: `${progressB}%` }} />
-                </div>
-              </div>
-            </div>
-          )}
+          {/* Rewards overlay removed */}
         </div>
 
         {/* Content card */}
@@ -468,20 +460,7 @@ const Dashboard = ({ currentUser, onLogout, setCurrentUser }) => {
               {main}
             </Suspense>
           </div>
-          {activeTab === 'rewards' && (
-            <div className="pointer-events-none absolute bottom-4 right-4 z-10">
-              <div className="relative w-32 h-32">
-                <div className="absolute inset-0 rounded-full bg-white/5 border border-white/10" />
-                <div className="absolute inset-0 rounded-full" style={{ background: `conic-gradient(#f59e0b ${60}%, transparent 0)` }} />
-                <div className="absolute inset-[12px] rounded-full bg-black flex items-center justify-center">
-                  <div className="text-center">
-                    <div className="text-[10px] text-gray-300 uppercase tracking-wide">Lifetime Points</div>
-                    <div className="text-sm text-gray-200 font-semibold">{stats.lifetime_points} pts</div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
+          {/* Lifetime Points widget removed from Rewards */}
         </section>
       </div>
 
