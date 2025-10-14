@@ -973,7 +973,7 @@ const WasteBounty = ({ updatePoints, currentUser }) => {
             <aside className="space-y-4">
                 <div className="rounded-xl bg-white/5 border border-white/10 p-4 h-max">
                     <div className="flex items-center justify-between mb-2">
-                        <div className="text-gray-100 font-semibold">Leaderboard</div>
+                        <div className="text-gray-100 font-semibold">Quick Leaderboard</div>
                         <button onClick={loadLeaderboard} disabled={lbLoading} className="text-xs text-gray-300 hover:text-white">
                             {lbLoading ? 'Loading…' : 'Refresh'}
                         </button>
@@ -985,7 +985,7 @@ const WasteBounty = ({ updatePoints, currentUser }) => {
                         <div>
                             <div className="text-gray-300 text-sm mb-1">Top Users</div>
                             <ol className="space-y-1">
-                                {topUsers.slice(0,5).map((u, i) => (
+                                {topUsers.slice(0,3).map((u, i) => (
                                     <li key={u.username || i} className="flex items-center justify-between text-sm">
                                         <span className="text-gray-200"><span className="text-gray-400 mr-2">#{i+1}</span>@{u.username}</span>
                                         <span className="text-eco-green">{u.total_points} pts</span>
@@ -999,7 +999,7 @@ const WasteBounty = ({ updatePoints, currentUser }) => {
                         <div>
                             <div className="text-gray-300 text-sm mb-1">Top Clans</div>
                             <ol className="space-y-1">
-                                {topClans.slice(0,5).map((c, i) => (
+                                {topClans.slice(0,3).map((c, i) => (
                                     <li key={c.id || i} className="flex items-center justify-between text-sm">
                                         <span className="text-gray-200"><span className="text-gray-400 mr-2">#{i+1}</span>{c.name}</span>
                                         <span className="text-eco-green">{c.points} pts</span>
@@ -1010,6 +1010,7 @@ const WasteBounty = ({ updatePoints, currentUser }) => {
                                 )}
                             </ol>
                         </div>
+                        <a href="#" onClick={(e)=> e.preventDefault()} className="block text-xs text-eco-green/90 hover:text-eco-green">Open full Leaderboard →</a>
                     </div>
                 </div>
             </aside>

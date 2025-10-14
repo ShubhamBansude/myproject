@@ -23,9 +23,12 @@ const WelcomePage = ({ onGetStarted }) => {
 
       {/* Minimal top bar (brand + login) */}
       <header className="relative z-20 flex items-center justify-between px-6 md:px-12 py-6">
-        <div className="flex items-center space-x-2">
-          <span className="text-gray-100 font-extrabold text-xl font-display">Waste</span>
-          <span className="text-eco-green font-extrabold text-xl font-display">Bounty</span>
+        <div className="flex items-center space-x-3">
+          <img src="/swachh-bharat.svg" alt="Swachh Bharat" className="h-6 w-auto opacity-90" />
+          <div className="flex items-center space-x-2">
+            <span className="text-gray-100 font-extrabold text-xl font-display">Waste</span>
+            <span className="text-eco-green font-extrabold text-xl font-display">Bounty</span>
+          </div>
         </div>
         <button onClick={onGetStarted} className="relative group px-4 py-2 rounded-full bg-white/5 text-gray-200 border border-white/10 transition-all duration-300 hover:bg-white/10 hover:-translate-y-0.5">
           <span className="absolute inset-0 rounded-full bg-eco-green/20 blur opacity-0 group-hover:opacity-100 transition" />
@@ -40,7 +43,7 @@ const WelcomePage = ({ onGetStarted }) => {
       <section className="relative z-10 flex items-center justify-center px-6 md:px-12">
         <div className="text-center max-w-5xl w-full">
           <h1 className="text-[44px] md:text-[62px] leading-[1.05] font-black tracking-tight bg-clip-text text-transparent bg-[linear-gradient(180deg,#e5f8ef,rgba(255,255,255,0.55))] font-display [text-shadow:_0_8px_40px_rgba(16,185,129,0.12)] animate-hue">
-            Waste<span className="text-eco-green">Bounty</span>
+            Waste<span className="text-eco-green">Rewards</span>
           </h1>
           <div className="mx-auto mt-3 h-[3px] w-28 rounded-full bg-gradient-to-r from-eco-green via-white/40 to-eco-accent animate-shimmer" />
 

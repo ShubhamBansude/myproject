@@ -6,6 +6,7 @@ import React, { useState, useEffect, lazy, Suspense, useRef } from 'react';
 const EarnPoints = lazy(() => import('./EarnPoints'));
 const WasteBounty = lazy(() => import('./WasteBounty'));
 const ClansPanel = lazy(() => import('./ClansPanel'));
+const Leaderboard = lazy(() => import('./Leaderboard'));
 
 const RewardsShop = ({ onRedeem }) => {
   const [coupons, setCoupons] = useState([]);
@@ -181,7 +182,7 @@ const ProfileView = ({ user, setCurrentUser }) => {
 };
 
 const Dashboard = ({ currentUser, onLogout, setCurrentUser }) => {
-  const [activeTab, setActiveTab] = useState('detection');
+  const [activeTab, setActiveTab] = useState('scan');
   const [stats, setStats] = useState({ detections: 0, redemptions: 0, lifetime_points: 0 });
   const [notifications, setNotifications] = useState([]);
   const [unreadCount, setUnreadCount] = useState(0);
@@ -287,34 +288,29 @@ const Dashboard = ({ currentUser, onLogout, setCurrentUser }) => {
 
   const updatePoints = (newPoints, redeemed = false) => {
     setCurrentUser(prev => ({ ...prev, total_points: newPoints }));
-    if (redeemed || activeTab === 'detection') fetchStats();
+    if (redeemed || activeTab === 'scan') fetchStats();
   };
 
   const tabs = [
-    { key: 'detection', label: 'Earn Points', icon: '📸' },
+    { key: 'scan', label: 'Smart Waste Scan', icon: '♻️' },
     { key: 'bounty', label: 'Waste Bounty', icon: '🗺️' },
+    { key: 'clans', label: 'Clans', icon: '🛡️' },
+    { key: 'leaderboard', label: 'Leaderboard', icon: '🏆' },
     { key: 'rewards', label: 'Rewards', icon: '🎁' },
     { key: 'profile', label: 'Profile', icon: '👤' },
   ];
 
   let main;
-  if (activeTab === 'detection') {
+  if (activeTab === 'scan') {
     main = <EarnPoints currentUser={currentUser} updatePoints={updatePoints} />;
   } else if (activeTab === 'bounty') {
     main = <WasteBounty currentUser={currentUser} updatePoints={updatePoints} />;
+  } else if (activeTab === 'clans') {
+    main = <ClansPanel currentUser={currentUser} />;
+  } else if (activeTab === 'leaderboard') {
+    main = <Leaderboard />;
   } else if (activeTab === 'rewards') {
-    main = (
-      <div className="grid gap-4 lg:grid-cols-[1fr_1.2fr]">
-        {/* Left: Clans system */}
-        <div className="order-2 lg:order-1">
-          <ClansPanel currentUser={currentUser} />
-        </div>
-        {/* Right: Rewards shop */}
-        <div className="order-1 lg:order-2">
-          <RewardsShop onRedeem={updatePoints} />
-        </div>
-      </div>
-    );
+    main = <RewardsShop onRedeem={updatePoints} />;
   } else {
     main = <ProfileView user={currentUser} setCurrentUser={setCurrentUser} />;
   }
@@ -335,9 +331,12 @@ const Dashboard = ({ currentUser, onLogout, setCurrentUser }) => {
       {/* Top Navbar */}
       <header className="sticky top-0 z-20 backdrop-blur bg-[#0b1220]/70 border-b border-white/10">
         <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <span className="text-white font-extrabold text-xl font-display">Waste</span>
-            <span className="text-eco-green font-extrabold text-xl font-display">Rewards</span>
+          <div className="flex items-center gap-3">
+            <img src="/swachh-bharat.svg" alt="Swachh Bharat" className="h-6 w-auto opacity-90" />
+            <div className="flex items-center gap-1">
+              <span className="text-white font-extrabold text-xl font-display">Waste</span>
+              <span className="text-eco-green font-extrabold text-xl font-display">Rewards</span>
+            </div>
           </div>
           <div className="flex items-center gap-3 text-sm relative">
             {/* Notification bell placed to the left of the username */}
@@ -394,19 +393,21 @@ const Dashboard = ({ currentUser, onLogout, setCurrentUser }) => {
       <div className="max-w-7xl mx-auto px-6 py-8">
         {/* Tabs */}
         <div className="flex flex-wrap items-center gap-2">
-          {tabs.map(t => (
-            <button
-              key={t.key}
-              onClick={() => setActiveTab(t.key)}
-              className={`px-4 py-2 rounded-full border text-sm transition ${
-                activeTab === t.key
-                  ? 'bg-eco-green text-eco-dark border-eco-green'
-                  : 'bg-white/5 text-gray-200 border-white/10 hover:bg-white/10'
-              }`}
-            >
-              <span className="mr-1">{t.icon}</span> {t.label}
-            </button>
-          ))}
+          <div className="flex flex-wrap gap-2 bg-white/5 border border-white/10 p-1 rounded-2xl">
+            {tabs.map(t => (
+              <button
+                key={t.key}
+                onClick={() => setActiveTab(t.key)}
+                className={`px-3 py-2 rounded-xl text-sm transition font-medium ${
+                  activeTab === t.key
+                    ? 'bg-eco-green text-eco-dark shadow border border-eco-green'
+                    : 'text-gray-200 hover:bg-white/10 border border-transparent'
+                }`}
+              >
+                <span className="mr-1">{t.icon}</span> {t.label}
+              </button>
+            ))}
+          </div>
         </div>
 
         {/* Stats strip with overlays */}
@@ -453,7 +454,14 @@ const Dashboard = ({ currentUser, onLogout, setCurrentUser }) => {
         {/* Content card */}
         <section className="mt-6 rounded-2xl bg-white/5 backdrop-blur border border-white/10 p-6 shadow-2xl relative">
           <h2 className="text-2xl md:text-3xl font-extrabold text-gray-100 mb-6">
-            {activeTab === 'detection' ? 'Upload Waste & Start Earning!' : activeTab.toUpperCase()}
+            {({
+              scan: 'Smart Waste Scan',
+              bounty: 'Waste Bounty',
+              clans: 'Clans',
+              leaderboard: 'Leaderboard',
+              rewards: 'Rewards',
+              profile: 'Your Profile',
+            })[activeTab]}
           </h2>
           <div className="opacity-0 animate-fade-in-up" key={activeTab}>
             <Suspense fallback={<div className="text-gray-400">Loading section…</div>}>

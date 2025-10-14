@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="180" height="42" viewBox="0 0 180 42" fill="none">
+  <defs>
+    <linearGradient id="g1" x1="0" y1="0" x2="180" y2="42" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#10b981"/>
+      <stop offset="1" stop-color="#f59e0b"/>
+    </linearGradient>
+  </defs>
+  <!-- Simplified glasses mark inspired by Swachh Bharat motif (non-official) -->
+  <circle cx="22" cy="21" r="10" stroke="url(#g1)" stroke-width="3" fill="none"/>
+  <circle cx="48" cy="21" r="10" stroke="url(#g1)" stroke-width="3" fill="none"/>
+  <path d="M3 14 C 16 8, 27 8, 40 14" stroke="url(#g1)" stroke-width="2" fill="none" opacity="0.8"/>
+  <path d="M30 28 C 43 34, 54 34, 67 28" stroke="url(#g1)" stroke-width="2" fill="none" opacity="0.8"/>
+  <text x="76" y="18" font-family="Outfit, Inter, Arial, sans-serif" font-size="14" fill="#e5f8ef" font-weight="700">Swachh Bharat</text>
+  <text x="76" y="34" font-family="Inter, Arial, sans-serif" font-size="11" fill="#cbd5e1">Mission</text>
+</svg>
