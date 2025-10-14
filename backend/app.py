@@ -43,9 +43,48 @@ POINTS_PER_DETECTION = 100
 NON_RECYCLABLE_FLAT_POINTS = 50
 
 # Gemini API configuration
-GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
+def _load_gemini_api_key() -> Optional[str]:
+    """
+    Load Gemini/Google Generative AI API key from environment variables, with sensible fallbacks.
+    Checks both GEMINI_API_KEY and GOOGLE_API_KEY for compatibility.
+    """
+    # Primary env vars
+    key = (os.environ.get('GEMINI_API_KEY') or os.environ.get('GOOGLE_API_KEY'))
+    if key:
+        return key.strip()
+
+    # Fallback: look for simple .env files colocated with backend or repo root
+    candidate_paths = [
+        os.path.join(os.path.dirname(__file__), '.env'),
+        os.path.join(os.path.dirname(__file__), '.env.txt'),
+        os.path.join(os.path.dirname(os.path.dirname(__file__)), '.env'),
+        os.path.join(os.path.dirname(os.path.dirname(__file__)), '.env.txt'),
+    ]
+    possible_keys = ('GEMINI_API_KEY', 'GOOGLE_API_KEY')
+    for env_path in candidate_paths:
+        try:
+            if not os.path.exists(env_path):
+                continue
+            with open(env_path, 'r', encoding='utf-8') as fh:
+                for raw_line in fh:
+                    line = raw_line.strip()
+                    if not line or line.startswith('#'):
+                        continue
+                    for var in possible_keys:
+                        prefix = f'{var}='
+                        if line.startswith(prefix) and len(line) > len(prefix):
+                            return line[len(prefix):].strip().strip('"').strip("'")
+        except Exception:
+            # Ignore parsing errors and continue searching
+            pass
+    return None
+
+GEMINI_API_KEY = _load_gemini_api_key()
 if GEMINI_API_KEY and genai is not None:
     genai.configure(api_key=GEMINI_API_KEY)
+
+# Unified availability flag used throughout the app
+GEMINI_AVAILABLE = bool(GEMINI_API_KEY and genai is not None)
 
 
 def generate_image_hash(image_bytes: bytes) -> str:
@@ -365,9 +404,9 @@ def analyze_video_sequence_with_gemini(frames: List[np.ndarray], max_retries: in
 	Analyze a sequence of 5 video frames using Gemini API for waste disposal verification
 	Includes retry mechanism for improved consistency
 	"""
-	if not GEMINI_API_KEY or genai is None:
+	if not GEMINI_AVAILABLE:
 		return {
-			"error": "Gemini API key not configured", 
+			"error": "Gemini API key not configured. Set GEMINI_API_KEY or GOOGLE_API_KEY on backend.", 
 			"waste_type": "unknown",
 			"disposal_verified": False,
 			"fallback": True,
@@ -538,9 +577,9 @@ def analyze_with_gemini(image: np.ndarray) -> Dict[str, Any]:
 	Analyze waste items in image using Gemini API as the primary detection system
 	Returns comprehensive waste analysis with classification and disposal recommendations
 	"""
-	if not GEMINI_API_KEY or genai is None:
+	if not GEMINI_AVAILABLE:
 		return {
-			"error": "Gemini API key not configured", 
+			"error": "Gemini API key not configured. Set GEMINI_API_KEY or GOOGLE_API_KEY on backend.", 
 			"items": [], 
 			"fallback": True,
 			"message": "Gemini API not available"
@@ -1911,9 +1950,9 @@ def verify_cleanup_with_gemini(original_image: np.ndarray, before_image: np.ndar
 	"""
 	Verify cleanup using Gemini API with the exact prompt specified
 	"""
-	if not GEMINI_API_KEY or genai is None:
+	if not GEMINI_AVAILABLE:
 		return {
-			"error": "Gemini API key not configured",
+			"error": "Gemini API key not configured. Set GEMINI_API_KEY or GOOGLE_API_KEY on backend.",
 			"scene_match": False,
 			"waste_present_before": False,
 			"cleanup_verified": False,
@@ -2522,7 +2561,7 @@ def analyze_detailed() -> Tuple[Any, int]:
 		if "error" in gemini_result:
 			return jsonify({
 				"error": gemini_result["error"],
-				"gemini_available": bool(GEMINI_API_KEY)
+				"gemini_available": GEMINI_AVAILABLE
 			}), 500
 
 		# Categorize items
@@ -2570,7 +2609,7 @@ def analyze_detailed() -> Tuple[Any, int]:
 			"analysis": gemini_result,
 			"categorized_items": categorized,
 			"potential_points": potential_points,
-			"gemini_available": bool(GEMINI_API_KEY),
+			"gemini_available": GEMINI_AVAILABLE,
 			"disposal_tips": [item.get("disposal_tip", "") for item in gemini_result.get("items", []) if item.get("disposal_tip")],
 			"environmental_impacts": [item.get("environmental_impact", "") for item in gemini_result.get("items", []) if item.get("environmental_impact")],
 			"summary": gemini_result.get("summary", ""),
@@ -2587,7 +2626,7 @@ def analyze_detailed() -> Tuple[Any, int]:
 		if "error" in video_analysis:
 			return jsonify({
 				"error": video_analysis["error"],
-				"gemini_available": bool(GEMINI_API_KEY)
+				"gemini_available": GEMINI_AVAILABLE
 			}), 500
 
 		# Calculate potential points for video
@@ -2598,7 +2637,7 @@ def analyze_detailed() -> Tuple[Any, int]:
 		response = {
 			"video_analysis": video_analysis,
 			"potential_points": potential_points,
-			"gemini_available": bool(GEMINI_API_KEY),
+			"gemini_available": GEMINI_AVAILABLE,
 			"waste_type": video_analysis.get("waste_type", "unknown"),
 			"disposal_verified": video_analysis.get("disposal_verified", False),
 			"reasoning": video_analysis.get("reasoning", "No reasoning provided"),
