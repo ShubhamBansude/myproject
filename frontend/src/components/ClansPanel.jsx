@@ -10,6 +10,7 @@ const ClansPanel = ({ currentUser }) => {
   const [cityClans, setCityClans] = useState([]);
   const [newClanName, setNewClanName] = useState('');
   const [joinCode, setJoinCode] = useState('');
+  const [pendingRequests, setPendingRequests] = useState([]);
 
   const token = useMemo(() => localStorage.getItem('authToken'), []);
 
@@ -24,6 +25,16 @@ const ClansPanel = ({ currentUser }) => {
       const list = await listRes.json();
       if (mineRes.ok) setMyClan(mine.clan || null); else setError(mine?.error || 'Failed to load my clan');
       if (listRes.ok) setCityClans(Array.isArray(list.clans) ? list.clans : []); else setError(list?.error || 'Failed to load clans');
+      // If leader, load requests
+      if (mine?.clan?.leader_username && mine.clan.leader_username === currentUser?.username) {
+        try {
+          const r = await fetch(apiUrl('/api/clan_join_requests'), { headers: { Authorization: `Bearer ${token}` } });
+          const d = await r.json();
+          if (r.ok) setPendingRequests(Array.isArray(d.requests) ? d.requests : []);
+        } catch {}
+      } else {
+        setPendingRequests([]);
+      }
     } catch (e) {
       setError('Network error.');
     } finally { setLoading(false); }
@@ -51,15 +62,15 @@ const ClansPanel = ({ currentUser }) => {
   const joinClan = async (e) => {
     e.preventDefault(); setError(''); setSuccess('');
     const code = (joinCode || '').trim();
-    if (!/^\d{4}$/.test(code)) { setError('Enter 4-digit code.'); return; }
     try {
       const res = await fetch(apiUrl('/api/clans/join'), {
         method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ code })
       });
       const data = await res.json();
-      if (!res.ok) { setError(data?.error || 'Failed to join clan'); return; }
-      setSuccess('Joined clan successfully.');
+      if (!res.ok) { setError(data?.error || 'Failed to request join'); return; }
+      if (data.status === 'requested') setSuccess('Join request sent to clan leader.');
+      else setSuccess('Joined clan successfully.');
       setJoinCode('');
       await load();
     } catch { setError('Network error.'); }
@@ -153,14 +164,27 @@ const ClansPanel = ({ currentUser }) => {
             </form>
             <div>
               <div className="text-gray-300 text-sm mb-2">Clans in your city</div>
-              <div className="space-y-2 max-h-48 overflow-auto pr-1">
+              <div className="space-y-2 max-h-64 overflow-auto pr-1">
                 {cityClans.length === 0 ? (
                   <div className="text-gray-400 text-sm">No clans yet. Create the first!</div>
                 ) : cityClans.map(c => (
-                  <div key={c.id} className="p-2 rounded bg-white/5 border border-white/10 flex items-center justify-between">
-                    <div>
-                      <div className="text-gray-100 font-medium">{c.name}</div>
-                      <div className="text-gray-400 text-xs">Leader #{c.leader_user_id}</div>
+                  <div key={c.id} className="p-2 rounded bg-white/5 border border-white/10">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <div className="text-gray-100 font-medium">{c.name}</div>
+                        <div className="text-gray-400 text-xs">Leader @{c.leader_username || c.leader_user_id}</div>
+                      </div>
+                      <button
+                        onClick={async ()=>{
+                          try {
+                            const res = await fetch(apiUrl('/api/clans/join'), { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ clan_id: c.id }) });
+                            const data = await res.json();
+                            if (!res.ok) { setError(data?.error || 'Failed to request join'); return; }
+                            setSuccess('Join request sent to leader.');
+                          } catch { setError('Network error.'); }
+                        }}
+                        className="px-2 py-1 rounded bg-eco-accent text-eco-dark text-xs font-semibold"
+                      >Request to Join</button>
                     </div>
                   </div>
                 ))}
@@ -200,6 +224,24 @@ const ClansPanel = ({ currentUser }) => {
                 ))}
               </div>
             </div>
+            {isLeader && (
+              <div className="mt-4">
+                <div className="text-gray-300 text-sm mb-1">Pending Join Requests</div>
+                <div className="space-y-2 max-h-40 overflow-auto pr-1">
+                  {pendingRequests.length === 0 ? (
+                    <div className="text-gray-400 text-xs">No pending requests.</div>
+                  ) : pendingRequests.map(r => (
+                    <div key={r.id} className="p-2 rounded bg-white/5 border border-white/10 flex items-center justify-between">
+                      <div className="text-gray-100 text-sm">@{r.applicant_username}</div>
+                      <div className="flex items-center gap-2">
+                        <button onClick={async ()=>{ try{ const res = await fetch(apiUrl('/api/clan_join_requests/decision'), { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ request_id: r.id, decision: 'approve' })}); const d = await res.json(); if(res.ok){ setSuccess('Approved.'); load(); } else setError(d?.error||'Failed'); } catch{ setError('Network error.'); } }} className="px-2 py-1 rounded bg-eco-green/20 text-eco-green text-xs">Approve</button>
+                        <button onClick={async ()=>{ try{ const res = await fetch(apiUrl('/api/clan_join_requests/decision'), { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ request_id: r.id, decision: 'reject' })}); const d = await res.json(); if(res.ok){ setSuccess('Rejected.'); load(); } else setError(d?.error||'Failed'); } catch{ setError('Network error.'); } }} className="px-2 py-1 rounded bg-red-500/20 text-red-200 text-xs">Reject</button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>

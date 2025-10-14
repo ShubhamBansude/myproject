@@ -978,6 +978,64 @@ def init_db() -> None:
 		conn.execute('CREATE INDEX IF NOT EXISTS idx_clan_messages_clan ON clan_messages(clan_id)')
 		conn.commit()
 
+		# Clan join requests
+		conn.execute(
+			(
+				'CREATE TABLE IF NOT EXISTS clan_join_requests ('
+				'  id INTEGER PRIMARY KEY AUTOINCREMENT,'
+				'  clan_id INTEGER NOT NULL,'
+				'  applicant_user_id INTEGER NOT NULL,'
+				'  status TEXT NOT NULL DEFAULT "pending",'
+				'  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,'
+				'  resolved_at DATETIME,'
+				'  FOREIGN KEY(clan_id) REFERENCES clans(id),'
+				'  FOREIGN KEY(applicant_user_id) REFERENCES users(id),'
+				'  UNIQUE(clan_id, applicant_user_id)'
+				')'
+			)
+		)
+		conn.execute('CREATE INDEX IF NOT EXISTS idx_clan_join_requests_clan ON clan_join_requests(clan_id)')
+		conn.execute('CREATE INDEX IF NOT EXISTS idx_clan_join_requests_applicant ON clan_join_requests(applicant_user_id)')
+		conn.commit()
+
+		# Friends and direct messages
+		conn.execute(
+			(
+				'CREATE TABLE IF NOT EXISTS friends ('
+				'  id INTEGER PRIMARY KEY AUTOINCREMENT,'
+				'  user_a_id INTEGER NOT NULL,'
+				'  user_b_id INTEGER NOT NULL,'
+				'  status TEXT NOT NULL,'
+				'  requested_by_user_id INTEGER NOT NULL,'
+				'  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,'
+				'  updated_at DATETIME,'
+				'  FOREIGN KEY(user_a_id) REFERENCES users(id),'
+				'  FOREIGN KEY(user_b_id) REFERENCES users(id),'
+				'  FOREIGN KEY(requested_by_user_id) REFERENCES users(id),'
+				'  UNIQUE(user_a_id, user_b_id)'
+				')'
+			)
+		)
+		conn.execute('CREATE INDEX IF NOT EXISTS idx_friends_users ON friends(user_a_id, user_b_id)')
+		conn.commit()
+
+		conn.execute(
+			(
+				'CREATE TABLE IF NOT EXISTS direct_messages ('
+				'  id INTEGER PRIMARY KEY AUTOINCREMENT,'
+				'  sender_user_id INTEGER NOT NULL,'
+				'  recipient_user_id INTEGER NOT NULL,'
+				'  message TEXT NOT NULL,'
+				'  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,'
+				'  deleted_at DATETIME,'
+				'  FOREIGN KEY(sender_user_id) REFERENCES users(id),'
+				'  FOREIGN KEY(recipient_user_id) REFERENCES users(id)'
+				')'
+			)
+		)
+		conn.execute('CREATE INDEX IF NOT EXISTS idx_dm_pair ON direct_messages(sender_user_id, recipient_user_id)')
+		conn.commit()
+
 		# Notifications table
 		conn.execute(
 			(
@@ -2006,76 +2064,76 @@ def create_bounty() -> Tuple[Any, int]:
 
 @app.route('/api/bounties', methods=['GET'])
 def get_bounties() -> Tuple[Any, int]:
-	"""
-	Get active bounties for the user's location
-	"""
-	username = parse_username_from_auth()
-	if not username:
-		return jsonify({"error": "missing auth token"}), 401
+    """
+    Get active bounties for the user's location
+    """
+    username = parse_username_from_auth()
+    if not username:
+        return jsonify({"error": "missing auth token"}), 401
 
-	# Get user's id and location
-	with get_db_connection() as conn:
-		row = conn.execute('SELECT id, country, state, city FROM users WHERE username = ?', (username,)).fetchone()
-		if row is None:
-			return jsonify({"error": "user not found"}), 404
-		user_id, user_country, user_state, user_city = int(row[0]), row[1], row[2], row[3]
-	
-	# Get active bounties in user's city OR those created by the user
-	with get_db_connection() as conn:
-		# Align existing active bounty locations to reporter's normalized profile location
-		try:
-			conn.execute(
-				'UPDATE waste_bounty '
-				'SET country = (SELECT country FROM users u WHERE u.id = reporter_user_id), '
-				'    state = (SELECT state FROM users u WHERE u.id = reporter_user_id), '
-				'    city = (SELECT city FROM users u WHERE u.id = reporter_user_id) '
-				'WHERE status = "REPORTED" '
-				'  AND EXISTS (SELECT 1 FROM users u WHERE u.id = reporter_user_id '
-				'    AND (TRIM(LOWER(u.country)) <> TRIM(LOWER(waste_bounty.country)) '
-				'      OR TRIM(LOWER(u.state)) <> TRIM(LOWER(waste_bounty.state)) '
-				'      OR TRIM(LOWER(u.city)) <> TRIM(LOWER(waste_bounty.city))))'
-			)
-			conn.commit()
-		except Exception as e:
-			print(f"Bounty location alignment skipped due to error: {e}")
+    # Get user's id and location
+    with get_db_connection() as conn:
+        row = conn.execute('SELECT id, country, state, city FROM users WHERE username = ?', (username,)).fetchone()
+        if row is None:
+            return jsonify({"error": "user not found"}), 404
+        user_id, user_country, user_state, user_city = int(row[0]), row[1], row[2], row[3]
+    
+    # Get active bounties in user's city OR those created by the user
+    with get_db_connection() as conn:
+        # Align existing active bounty locations to reporter's normalized profile location
+        try:
+            conn.execute(
+                'UPDATE waste_bounty '
+                'SET country = (SELECT country FROM users u WHERE u.id = reporter_user_id), '
+                '    state = (SELECT state FROM users u WHERE u.id = reporter_user_id), '
+                '    city = (SELECT city FROM users u WHERE u.id = reporter_user_id) '
+                'WHERE status = "REPORTED" '
+                '  AND EXISTS (SELECT 1 FROM users u WHERE u.id = reporter_user_id '
+                '    AND (TRIM(LOWER(u.country)) <> TRIM(LOWER(waste_bounty.country)) '
+                '      OR TRIM(LOWER(u.state)) <> TRIM(LOWER(waste_bounty.state)) '
+                '      OR TRIM(LOWER(u.city)) <> TRIM(LOWER(waste_bounty.city))))'
+            )
+            conn.commit()
+        except Exception as e:
+            print(f"Bounty location alignment skipped due to error: {e}")
 
-		rows = conn.execute(
-			'SELECT '
-			'  b.id, b.latitude, b.longitude, b.country, b.state, b.city, '
-			'  b.bounty_points, b.waste_image_url, b.created_at, b.before_image_url, b.after_image_url, '
-			'  u.username AS reporter_username '
-			'FROM waste_bounty b '
-			'JOIN users u ON u.id = b.reporter_user_id '
-			'WHERE b.status = "REPORTED" '
-			'  AND ( '
-			'    (TRIM(LOWER(b.country)) = TRIM(LOWER(?)) '
-			'     AND TRIM(LOWER(b.state)) = TRIM(LOWER(?)) '
-			'     AND TRIM(LOWER(b.city)) = TRIM(LOWER(?))) '
-			'    OR b.reporter_user_id = ? '
-			'  ) '
-			'ORDER BY b.created_at DESC',
-			(user_country, user_state, user_city, user_id)
-		).fetchall()
-		print(f"Found {len(rows)} bounties for user city: {user_city}")
-		
-		bounties = []
-		for row in rows:
-			bounties.append({
-				"id": row[0],
-				"latitude": row[1],
-				"longitude": row[2],
-				"country": row[3],
-				"state": row[4],
-				"city": row[5],
-				"bounty_points": row[6],
-				"waste_image_url": row[7],
-				"created_at": row[8],
-				"before_image_url": row[9],
-				"after_image_url": row[10],
-				"reporter_username": row[11]
-			})
-	
-	return jsonify({"bounties": bounties}), 200
+        rows = conn.execute(
+            'SELECT '
+            '  b.id, b.latitude, b.longitude, b.country, b.state, b.city, '
+            '  b.bounty_points, b.waste_image_url, b.created_at, b.before_image_url, b.after_image_url, '
+            '  u.username AS reporter_username '
+            'FROM waste_bounty b '
+            'JOIN users u ON u.id = b.reporter_user_id '
+            'WHERE b.status = "REPORTED" '
+            '  AND ( '
+            '    (TRIM(LOWER(b.country)) = TRIM(LOWER(?)) '
+            '     AND TRIM(LOWER(b.state)) = TRIM(LOWER(?)) '
+            '     AND TRIM(LOWER(b.city)) = TRIM(LOWER(?))) '
+            '    OR b.reporter_user_id = ? '
+            '  ) '
+            'ORDER BY b.created_at DESC',
+            (user_country, user_state, user_city, user_id)
+        ).fetchall()
+        print(f"Found {len(rows)} bounties for user city: {user_city}")
+        
+        bounties = []
+        for row in rows:
+            bounties.append({
+                "id": row[0],
+                "latitude": row[1],
+                "longitude": row[2],
+                "country": row[3],
+                "state": row[4],
+                "city": row[5],
+                "bounty_points": row[6],
+                "waste_image_url": row[7],
+                "created_at": row[8],
+                "before_image_url": row[9],
+                "after_image_url": row[10],
+                "reporter_username": row[11]
+            })
+    
+    return jsonify({"bounties": bounties}), 200
 
 
 @app.route('/api/bounty_chat', methods=['GET'])
@@ -2474,9 +2532,9 @@ Respond with a JSON object: {'scene_match': [true/false], 'waste_present_before'
 
 @app.route('/api/verify_cleanup', methods=['POST'])
 def verify_cleanup() -> Tuple[Any, int]:
-	"""
-	Verify cleanup submission with GPS validation and Gemini AI analysis
-	"""
+    """
+    Verify cleanup submission using Gemini AI only (location checks removed).
+    """
 	username = parse_username_from_auth()
 	if not username:
 		return jsonify({"error": "missing auth token"}), 401
@@ -2516,99 +2574,42 @@ def verify_cleanup() -> Tuple[Any, int]:
 	with open(after_path, 'wb') as f:
 		f.write(after_bytes)
 	
-	# Extract GPS coordinates from both photos
-	before_lat, before_lon = extract_gps_from_image(before_bytes)
-	after_lat, after_lon = extract_gps_from_image(after_bytes)
-
-	# Fallback to provided coordinates if EXIF missing
-	if before_lat is None or before_lon is None:
-		before_lat_str = request.form.get('before_latitude')
-		before_lon_str = request.form.get('before_longitude')
-		if before_lat_str and before_lon_str:
-			try:
-				before_lat = float(before_lat_str)
-				before_lon = float(before_lon_str)
-			except ValueError:
-				return jsonify({"error": "Invalid before photo GPS data provided"}), 400
-
-	if after_lat is None or after_lon is None:
-		after_lat_str = request.form.get('after_latitude')
-		after_lon_str = request.form.get('after_longitude')
-		if after_lat_str and after_lon_str:
-			try:
-				after_lat = float(after_lat_str)
-				after_lon = float(after_lon_str)
-			except ValueError:
-				return jsonify({"error": "Invalid after photo GPS data provided"}), 400
-	
-	if before_lat is None or before_lon is None:
-		return jsonify({"error": "Before cleanup photo must contain valid GPS location data"}), 400
-	
-	if after_lat is None or after_lon is None:
-		return jsonify({"error": "After cleanup photo must contain valid GPS location data"}), 400
-	
-	# Get bounty information
+    # Get bounty information
 	with get_db_connection() as conn:
 		row = conn.execute('SELECT latitude, longitude, waste_image_url, status FROM waste_bounty WHERE id = ?', (bounty_id,)).fetchone()
 		if row is None:
 			return jsonify({"error": "bounty not found"}), 404
 		
-		bounty_lat, bounty_lon, original_image_url, status = row[0], row[1], row[2], row[3]
+        bounty_lat, bounty_lon, original_image_url, status = row[0], row[1], row[2], row[3]
 		
 		if status != 'REPORTED':
 			return jsonify({"error": "bounty is no longer available"}), 400
-	
-	# Validate GPS coordinates are within 100 meter radius
-	before_distance = calculate_distance(bounty_lat, bounty_lon, before_lat, before_lon)
-	after_distance = calculate_distance(bounty_lat, bounty_lon, after_lat, after_lon)
-	
-	if before_distance > 100 or after_distance > 100:
-		return jsonify({
-			"error": f"Photos must be taken within 100 meters of the bounty location. Before: {before_distance:.1f}m, After: {after_distance:.1f}m"
-		}), 400
 	
 	# Load original image for comparison
 	original_image_path = os.path.join(os.path.dirname(__file__), original_image_url.lstrip('/'))
 	if not os.path.exists(original_image_path):
 		return jsonify({"error": "original bounty image not found"}), 500
 	
-	# Optional: Development/testing mode to bypass Gemini scene check (server-controlled only)
-	# Also auto-enable in dev if Gemini is not configured to avoid false negatives locally
-	dev_mode = (os.environ.get('DEV_MODE_CLEANUP') == '1' or not GEMINI_AVAILABLE)
-	if dev_mode:
-		# Directly approve if GPS validation passed; persist image URLs and award points
-		with get_db_connection() as conn:
-			row = conn.execute('SELECT id, total_points FROM users WHERE username = ?', (username,)).fetchone()
-			if row is None:
-				return jsonify({"error": "user not found"}), 404
-			user_id, current_points = int(row[0]), int(row[1])
-
-			bounty_row = conn.execute('SELECT bounty_points FROM waste_bounty WHERE id = ?', (bounty_id,)).fetchone()
-			bounty_points = int(bounty_row[0]) if bounty_row else 200
-
-			conn.execute(
-				'UPDATE waste_bounty SET status = "CLOSED", claimed_by_user_id = ?, claimed_at = CURRENT_TIMESTAMP, completed_at = CURRENT_TIMESTAMP, before_image_url = ?, after_image_url = ? WHERE id = ?',
-				(user_id, f"/uploads/{before_filename}", f"/uploads/{after_filename}", bounty_id)
-			)
-			new_total = current_points + bounty_points
-			conn.execute('UPDATE users SET total_points = ? WHERE id = ?', (new_total, user_id))
-			conn.execute('INSERT INTO transactions (user_id, points_change, reason) VALUES (?, ?, ?)', (user_id, bounty_points, f'DEV MODE: Bounty Cleanup Completed - Bounty #{bounty_id}'))
-			conn.commit()
-
-		return jsonify({
-			"message": "Cleanup verified (DEV MODE)",
-			"points_awarded": bounty_points,
-			"total_points": new_total,
-			"dev_mode": True
-		}), 200
+    # Optional: Development/testing mode to bypass Gemini scene check (server-controlled only)
+    dev_mode = (os.environ.get('DEV_MODE_CLEANUP') == '1')
 
 	# Convert images to OpenCV format for Gemini analysis
 	original_image = cv2.imread(original_image_path)
 	before_image = cv2.imread(before_path)
 	after_image = cv2.imread(after_path)
 	
-	# Verify cleanup with Gemini AI
-	verification_result = verify_cleanup_with_gemini(original_image, before_image, after_image)
+    # Verify cleanup with Gemini AI
+    if not GEMINI_AVAILABLE and not dev_mode:
+        return jsonify({
+            "error": "Gemini verification is not available on the server. Set GEMINI_API_KEY to enable verification."
+        }), 503
+
+    verification_result = verify_cleanup_with_gemini(original_image, before_image, after_image) if not dev_mode else {
+        "scene_match": True,
+        "waste_present_before": True,
+        "cleanup_verified": True,
+        "fallback": True
+    }
 	
 	# Check if all three conditions are met
 	scene_match = verification_result.get("scene_match", False)
@@ -2623,7 +2624,7 @@ def verify_cleanup() -> Tuple[Any, int]:
 		user_id, current_points = int(row[0]), int(row[1])
 	
 	# Process verification result
-	if scene_match and waste_present_before and cleanup_verified:
+    if scene_match and waste_present_before and cleanup_verified:
 		# Cleanup approved - update bounty and award points
 		with get_db_connection() as conn:
 			# Get bounty points
@@ -2642,12 +2643,13 @@ def verify_cleanup() -> Tuple[Any, int]:
 			conn.execute('INSERT INTO transactions (user_id, points_change, reason) VALUES (?, ?, ?)', (user_id, bounty_points, f'Bounty Cleanup Completed - Bounty #{bounty_id}'))
 			conn.commit()
 		
-		return jsonify({
-			"message": "Cleanup verified successfully! Points awarded.",
-			"points_awarded": bounty_points,
-			"total_points": new_total,
-			"verification_result": verification_result
-		}), 200
+        return jsonify({
+            "message": "Cleanup verified successfully! Points awarded.",
+            "points_awarded": bounty_points,
+            "total_points": new_total,
+            "verification_result": verification_result,
+            "dev_mode": dev_mode
+        }), 200
 	else:
 		# Cleanup not approved
 		reasons = []
@@ -3121,18 +3123,19 @@ def list_city_clans():
             'SELECT id, name, city, state, country, leader_user_id, created_at FROM clans WHERE city = ? ORDER BY created_at DESC',
             (u["city"],)
         ).fetchall()
-        clans = [
-            {
+        clans = []
+        for r in rows:
+            leader_username = conn.execute('SELECT username FROM users WHERE id = ?', (r["leader_user_id"],)).fetchone()
+            clans.append({
                 "id": r["id"],
                 "name": r["name"],
                 "city": r["city"],
                 "state": r["state"],
                 "country": r["country"],
                 "leader_user_id": r["leader_user_id"],
+                "leader_username": leader_username[0] if leader_username else None,
                 "created_at": r["created_at"],
-            }
-            for r in rows
-        ]
+            })
         return jsonify({"clans": clans}), 200
 
 
@@ -3214,8 +3217,8 @@ def join_clan():
         return jsonify({"error": "unauthorized"}), 401
     data: Dict[str, Any] = request.get_json(silent=True) or {}
     code = (data.get('code') or '').strip()
-    if not code.isdigit() or len(code) != 4:
-        return jsonify({"error": "invalid code"}), 400
+    # Accept either a 4-digit code or a direct clan_id, or post a join request
+    clan_id_req = data.get('clan_id')
     with get_db_connection() as conn:
         u = _get_user(conn, username)
         if u is None:
@@ -3223,14 +3226,36 @@ def join_clan():
         already = conn.execute('SELECT 1 FROM clan_members WHERE user_id = ?', (u["id"],)).fetchone()
         if already:
             return jsonify({"error": "already in a clan"}), 400
-        clan = conn.execute('SELECT * FROM clans WHERE join_code = ?', (code,)).fetchone()
-        if clan is None:
-            return jsonify({"error": "clan not found"}), 404
+        clan = None
+        if clan_id_req:
+            try:
+                clan = conn.execute('SELECT * FROM clans WHERE id = ?', (int(clan_id_req),)).fetchone()
+            except Exception:
+                return jsonify({"error": "invalid clan_id"}), 400
+        elif code and code.isdigit() and len(code) == 4:
+            clan = conn.execute('SELECT * FROM clans WHERE join_code = ?', (code,)).fetchone()
+        else:
+            return jsonify({"error": "provide code or clan_id"}), 400
         if (clan["city"] or '').strip().lower() != (u["city"] or '').strip().lower():
             return jsonify({"error": "can only join clan in your city"}), 400
-        conn.execute('INSERT INTO clan_members (clan_id, user_id, role) VALUES (?, ?, ?)', (clan["id"], u["id"], 'member'))
+        # Create join request and notify leader
+        leader_row = conn.execute('SELECT username FROM users WHERE id = ?', (clan["leader_user_id"],)).fetchone()
+        conn.execute('INSERT OR IGNORE INTO clan_join_requests (clan_id, applicant_user_id, status) VALUES (?, ?, "pending")', (clan["id"], u["id"]))
         conn.commit()
-        return jsonify({"status": "joined", "clan_id": clan["id"]}), 200
+        try:
+            if leader_row and leader_row[0]:
+                notify_user(leader_row[0], {
+                    "id": None,
+                    "type": "CLAN_JOIN_REQUEST",
+                    "title": "New clan join request",
+                    "message": f"@{username} requested to join your clan {clan['name']}",
+                    "city": clan["city"],
+                    "payload": {"clan_id": clan["id"], "applicant": username},
+                    "created_at": time.strftime('%Y-%m-%d %H:%M:%S')
+                })
+        except Exception:
+            pass
+        return jsonify({"status": "requested", "clan_id": clan["id"]}), 200
 
 
 @app.route('/api/my_clan/leave', methods=['DELETE'])
@@ -3290,6 +3315,87 @@ def kick_member():
         conn.execute('DELETE FROM clan_members WHERE clan_id = ? AND user_id = ?', (clan_id, target["id"]))
         conn.commit()
         return jsonify({"status": "kicked"}), 200
+
+
+@app.route('/api/clan_join_requests', methods=['GET'])
+def list_clan_join_requests():
+    """List pending join requests for the clan led by the current user."""
+    username = parse_username_from_auth()
+    if not username:
+        return jsonify({"error": "unauthorized"}), 401
+    with get_db_connection() as conn:
+        leader = _get_user(conn, username)
+        if leader is None:
+            return jsonify({"error": "user not found"}), 404
+        clan_row = conn.execute('SELECT id FROM clans WHERE leader_user_id = ?', (leader["id"],)).fetchone()
+        if clan_row is None:
+            return jsonify({"requests": []}), 200
+        clan_id = clan_row["id"]
+        rows = conn.execute(
+            'SELECT r.id, u.username as applicant_username, r.created_at '\
+            'FROM clan_join_requests r JOIN users u ON u.id = r.applicant_user_id '\
+            'WHERE r.clan_id = ? AND r.status = "pending" ORDER BY r.created_at ASC',
+            (clan_id,)
+        ).fetchall()
+        requests = [
+            {"id": r["id"], "applicant_username": r["applicant_username"], "created_at": r["created_at"]}
+            for r in rows
+        ]
+        return jsonify({"requests": requests}), 200
+
+
+@app.route('/api/clan_join_requests/decision', methods=['POST'])
+def decide_clan_join_request():
+    """Leader approves or rejects a join request."""
+    username = parse_username_from_auth()
+    if not username:
+        return jsonify({"error": "unauthorized"}), 401
+    data: Dict[str, Any] = request.get_json(silent=True) or {}
+    try:
+        request_id = int(data.get('request_id'))
+    except Exception:
+        return jsonify({"error": "invalid request_id"}), 400
+    decision = (data.get('decision') or '').strip().lower()
+    if decision not in ('approve', 'reject'):
+        return jsonify({"error": "decision must be approve or reject"}), 400
+    with get_db_connection() as conn:
+        leader = _get_user(conn, username)
+        if leader is None:
+            return jsonify({"error": "user not found"}), 404
+        r = conn.execute('SELECT clan_id, applicant_user_id, status FROM clan_join_requests WHERE id = ?', (request_id,)).fetchone()
+        if r is None:
+            return jsonify({"error": "request not found"}), 404
+        clan_id, applicant_user_id, status = r["clan_id"], r["applicant_user_id"], (r["status"] or '').lower()
+        # Ensure current user is the leader of this clan
+        is_leader = conn.execute('SELECT 1 FROM clans WHERE id = ? AND leader_user_id = ?', (clan_id, leader["id"])).fetchone()
+        if is_leader is None:
+            return jsonify({"error": "forbidden"}), 403
+        if status != 'pending':
+            return jsonify({"error": "request already decided"}), 400
+        if decision == 'approve':
+            # Add as member if not already in any clan
+            exists = conn.execute('SELECT 1 FROM clan_members WHERE user_id = ?', (applicant_user_id,)).fetchone()
+            if exists is None:
+                conn.execute('INSERT INTO clan_members (clan_id, user_id, role) VALUES (?, ?, ?)', (clan_id, applicant_user_id, 'member'))
+            conn.execute('UPDATE clan_join_requests SET status = "approved", resolved_at = CURRENT_TIMESTAMP WHERE id = ?', (request_id,))
+        else:
+            conn.execute('UPDATE clan_join_requests SET status = "rejected", resolved_at = CURRENT_TIMESTAMP WHERE id = ?', (request_id,))
+        conn.commit()
+        # Notify applicant
+        applicant_row = conn.execute('SELECT username FROM users WHERE id = ?', (applicant_user_id,)).fetchone()
+        try:
+            if applicant_row and applicant_row[0]:
+                notify_user(applicant_row[0], {
+                    "id": None,
+                    "type": "CLAN_JOIN_DECISION",
+                    "title": "Clan join request updated",
+                    "message": f"Your request was {decision} for clan #{clan_id}",
+                    "payload": {"clan_id": clan_id, "decision": decision},
+                    "created_at": time.strftime('%Y-%m-%d %H:%M:%S')
+                })
+        except Exception:
+            pass
+        return jsonify({"status": decision}), 200
 
 
 @app.route('/api/clan_chat', methods=['GET'])
@@ -3430,6 +3536,255 @@ def leaderboard_clans():
         ]
         return jsonify({"clans": clans}), 200
 
+
+# ======== Friends & Direct Messages ========
+def _get_user_id(conn: Connection, username: str) -> Optional[int]:
+    row = conn.execute('SELECT id FROM users WHERE username = ?', (username,)).fetchone()
+    return int(row[0]) if row else None
+
+
+def _normalize_pair(a_id: int, b_id: int) -> Tuple[int, int]:
+    return (a_id, b_id) if a_id < b_id else (b_id, a_id)
+
+
+@app.route('/api/friends', methods=['GET'])
+def list_friends():
+    username = parse_username_from_auth()
+    if not username:
+        return jsonify({"error": "unauthorized"}), 401
+    with get_db_connection() as conn:
+        me = _get_user(conn, username)
+        if me is None:
+            return jsonify({"error": "user not found"}), 404
+        uid = me["id"]
+        # Accepted friends
+        rows = conn.execute(
+            'SELECT f.user_a_id, f.user_b_id, u.username AS other_username '\
+            'FROM friends f JOIN users u ON (u.id = CASE WHEN f.user_a_id = ? THEN f.user_b_id ELSE f.user_a_id END) '\
+            'WHERE (f.user_a_id = ? OR f.user_b_id = ?) AND f.status = "accepted"',
+            (uid, uid, uid)
+        ).fetchall()
+        friends = [{"username": r["other_username"]} for r in rows]
+        # Incoming pending
+        rows_in = conn.execute(
+            'SELECT u.username FROM friends f JOIN users u ON u.id = CASE WHEN f.user_a_id = ? THEN f.user_b_id ELSE f.user_a_id END '
+            'WHERE (f.user_a_id = ? OR f.user_b_id = ?) AND f.status = "pending" AND f.requested_by_user_id <> ?',
+            (uid, uid, uid, uid)
+        ).fetchall()
+        pending_incoming = [r[0] for r in rows_in]
+        # Outgoing pending
+        rows_out = conn.execute(
+            'SELECT u.username FROM friends f JOIN users u ON u.id = CASE WHEN f.user_a_id = ? THEN f.user_b_id ELSE f.user_a_id END '
+            'WHERE (f.user_a_id = ? OR f.user_b_id = ?) AND f.status = "pending" AND f.requested_by_user_id = ?',
+            (uid, uid, uid, uid)
+        ).fetchall()
+        pending_outgoing = [r[0] for r in rows_out]
+        return jsonify({"friends": friends, "pending_incoming": pending_incoming, "pending_outgoing": pending_outgoing}), 200
+
+
+@app.route('/api/friends/add', methods=['POST'])
+def add_friend():
+    username = parse_username_from_auth()
+    if not username:
+        return jsonify({"error": "unauthorized"}), 401
+    data: Dict[str, Any] = request.get_json(silent=True) or {}
+    target = (data.get('username') or '').strip()
+    if not target:
+        return jsonify({"error": "username required"}), 400
+    if target == username:
+        return jsonify({"error": "cannot add yourself"}), 400
+    with get_db_connection() as conn:
+        me_id = _get_user_id(conn, username)
+        you_id = _get_user_id(conn, target)
+        if me_id is None or you_id is None:
+            return jsonify({"error": "user not found"}), 404
+        a_id, b_id = _normalize_pair(me_id, you_id)
+        pair = conn.execute('SELECT id, status, requested_by_user_id FROM friends WHERE user_a_id = ? AND user_b_id = ?', (a_id, b_id)).fetchone()
+        if pair is None:
+            conn.execute('INSERT INTO friends (user_a_id, user_b_id, status, requested_by_user_id, updated_at) VALUES (?, ?, "pending", ?, CURRENT_TIMESTAMP)', (a_id, b_id, me_id))
+            conn.commit()
+            # notify recipient
+            try:
+                notify_user(target, {
+                    "id": None,
+                    "type": "FRIEND_REQUEST",
+                    "title": "New friend request",
+                    "message": f"@{username} sent you a friend request",
+                    "payload": {"from": username},
+                    "created_at": time.strftime('%Y-%m-%d %H:%M:%S')
+                })
+            except Exception:
+                pass
+            return jsonify({"status": "pending"}), 200
+        status = (pair["status"] or '').lower()
+        requested_by = int(pair["requested_by_user_id"])
+        if status == 'accepted':
+            return jsonify({"status": "accepted"}), 200
+        if status == 'pending' and requested_by != me_id:
+            # Auto-accept if they already requested you
+            conn.execute('UPDATE friends SET status = "accepted", updated_at = CURRENT_TIMESTAMP WHERE id = ?', (pair["id"],))
+            conn.commit()
+            try:
+                notify_user(target, {
+                    "id": None,
+                    "type": "FRIEND_ACCEPTED",
+                    "title": "Friend request accepted",
+                    "message": f"@{username} accepted your friend request",
+                    "payload": {"user": username},
+                    "created_at": time.strftime('%Y-%m-%d %H:%M:%S')
+                })
+            except Exception:
+                pass
+            return jsonify({"status": "accepted"}), 200
+        return jsonify({"status": status}), 200
+
+
+@app.route('/api/friends/decision', methods=['POST'])
+def decide_friend():
+    username = parse_username_from_auth()
+    if not username:
+        return jsonify({"error": "unauthorized"}), 401
+    data: Dict[str, Any] = request.get_json(silent=True) or {}
+    target = (data.get('username') or '').strip()
+    decision = (data.get('decision') or '').strip().lower()
+    if decision not in ('accept', 'reject'):
+        return jsonify({"error": "decision must be accept or reject"}), 400
+    with get_db_connection() as conn:
+        me_id = _get_user_id(conn, username)
+        you_id = _get_user_id(conn, target)
+        if me_id is None or you_id is None:
+            return jsonify({"error": "user not found"}), 404
+        a_id, b_id = _normalize_pair(me_id, you_id)
+        pair = conn.execute('SELECT id, status FROM friends WHERE user_a_id = ? AND user_b_id = ?', (a_id, b_id)).fetchone()
+        if pair is None:
+            return jsonify({"error": "no request found"}), 404
+        status = (pair["status"] or '').lower()
+        if status == 'accepted':
+            return jsonify({"status": "accepted"}), 200
+        if decision == 'accept':
+            conn.execute('UPDATE friends SET status = "accepted", updated_at = CURRENT_TIMESTAMP WHERE id = ?', (pair["id"],))
+            conn.commit()
+            try:
+                notify_user(target, {
+                    "id": None,
+                    "type": "FRIEND_ACCEPTED",
+                    "title": "Friend request accepted",
+                    "message": f"@{username} accepted your friend request",
+                    "payload": {"user": username},
+                    "created_at": time.strftime('%Y-%m-%d %H:%M:%S')
+                })
+            except Exception:
+                pass
+            return jsonify({"status": "accepted"}), 200
+        else:
+            conn.execute('UPDATE friends SET status = "rejected", updated_at = CURRENT_TIMESTAMP WHERE id = ?', (pair["id"],))
+            conn.commit()
+            return jsonify({"status": "rejected"}), 200
+
+
+@app.route('/api/dm', methods=['GET'])
+def get_direct_messages():
+    username = parse_username_from_auth()
+    if not username:
+        return jsonify({"error": "unauthorized"}), 401
+    with_user = (request.args.get('with') or '').strip()
+    limit = int(request.args.get('limit', '100'))
+    limit = max(1, min(limit, 500))
+    if not with_user:
+        return jsonify({"error": "with is required"}), 400
+    with get_db_connection() as conn:
+        me_id = _get_user_id(conn, username)
+        you_id = _get_user_id(conn, with_user)
+        if me_id is None or you_id is None:
+            return jsonify({"error": "user not found"}), 404
+        # Require accepted friendship
+        a_id, b_id = _normalize_pair(me_id, you_id)
+        pair = conn.execute('SELECT status FROM friends WHERE user_a_id = ? AND user_b_id = ?', (a_id, b_id)).fetchone()
+        if pair is None or (pair["status"] or '').lower() != 'accepted':
+            return jsonify({"error": "not friends"}), 403
+        rows = conn.execute(
+            'SELECT m.id, s.username as sender_username, r.username as recipient_username, m.message, m.created_at '
+            'FROM direct_messages m '
+            'JOIN users s ON s.id = m.sender_user_id '
+            'JOIN users r ON r.id = m.recipient_user_id '
+            'WHERE ((m.sender_user_id = ? AND m.recipient_user_id = ?) OR (m.sender_user_id = ? AND m.recipient_user_id = ?)) '
+            '  AND m.deleted_at IS NULL '
+            'ORDER BY m.id ASC LIMIT ?',
+            (me_id, you_id, you_id, me_id, limit)
+        ).fetchall()
+        messages = [
+            {
+                "id": r["id"],
+                "sender_username": r["sender_username"],
+                "recipient_username": r["recipient_username"],
+                "message": r["message"],
+                "created_at": r["created_at"],
+            } for r in rows
+        ]
+        return jsonify({"messages": messages}), 200
+
+
+@app.route('/api/dm', methods=['POST'])
+def send_direct_message():
+    username = parse_username_from_auth()
+    if not username:
+        return jsonify({"error": "unauthorized"}), 401
+    data: Dict[str, Any] = request.get_json(silent=True) or {}
+    to_user = (data.get('to') or '').strip()
+    text = (data.get('message') or '').strip()
+    if not to_user or not text:
+        return jsonify({"error": "to and message required"}), 400
+    if len(text) > 2000:
+        return jsonify({"error": "message too long"}), 400
+    with get_db_connection() as conn:
+        me_id = _get_user_id(conn, username)
+        you_id = _get_user_id(conn, to_user)
+        if me_id is None or you_id is None:
+            return jsonify({"error": "user not found"}), 404
+        a_id, b_id = _normalize_pair(me_id, you_id)
+        pair = conn.execute('SELECT status FROM friends WHERE user_a_id = ? AND user_b_id = ?', (a_id, b_id)).fetchone()
+        if pair is None or (pair["status"] or '').lower() != 'accepted':
+            return jsonify({"error": "not friends"}), 403
+        conn.execute('INSERT INTO direct_messages (sender_user_id, recipient_user_id, message) VALUES (?, ?, ?)', (me_id, you_id, text))
+        msg_id = conn.execute('SELECT last_insert_rowid()').fetchone()[0]
+        row = conn.execute('SELECT id, created_at FROM direct_messages WHERE id = ?', (msg_id,)).fetchone()
+        conn.commit()
+        created = {
+            "id": row["id"],
+            "sender_username": username,
+            "recipient_username": to_user,
+            "message": text,
+            "created_at": row["created_at"],
+        }
+        try:
+            notify_user(to_user, {
+                "id": None,
+                "type": "DM",
+                "title": f"Message from @{username}",
+                "message": text[:80],
+                "payload": {"from": username},
+                "created_at": time.strftime('%Y-%m-%d %H:%M:%S')
+            })
+        except Exception:
+            pass
+        return jsonify({"message": created}), 201
+
+
+@app.route('/api/dm/<int:message_id>', methods=['DELETE'])
+def delete_direct_message(message_id: int):
+    username = parse_username_from_auth()
+    if not username:
+        return jsonify({"error": "unauthorized"}), 401
+    with get_db_connection() as conn:
+        me_id = _get_user_id(conn, username)
+        row = conn.execute('SELECT sender_user_id FROM direct_messages WHERE id = ? AND deleted_at IS NULL', (message_id,)).fetchone()
+        if row is None:
+            return jsonify({"error": "message not found"}), 404
+        if int(row[0]) != me_id:
+            return jsonify({"error": "forbidden"}), 403
+        conn.execute('UPDATE direct_messages SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?', (message_id,))
+        conn.commit()
+        return jsonify({"status": "deleted"}), 200
 
 if __name__ == '__main__':
     init_db()

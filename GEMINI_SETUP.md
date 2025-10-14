@@ -20,13 +20,7 @@ The application now uses **Gemini AI as the primary and only detection system**:
 
 ### 2. Configure API Key
 
-The API key is already configured in the code! Your key `AIzaSyCfWu5kqtDCBySuyph7_L5aeODLosKWT7Q` is set as the default.
-
-#### Option A: Use Default (Already Set)
-The API key is already configured in `backend/app.py` and ready to use.
-
-#### Option B: Environment Variable Override (Optional)
-If you want to use a different key or override the default:
+Set your Gemini API key via environment variable (required in production):
 ```bash
 # Windows (PowerShell)
 $env:GEMINI_API_KEY="your_other_api_key_here"
@@ -35,7 +29,7 @@ $env:GEMINI_API_KEY="your_other_api_key_here"
 set GEMINI_API_KEY=your_other_api_key_here
 
 # Linux/Mac
-export GEMINI_API_KEY="your_other_api_key_here"
+export GEMINI_API_KEY="your_api_key_here"
 ```
 
 ### 3. Install Dependencies
