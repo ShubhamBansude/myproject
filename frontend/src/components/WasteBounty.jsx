@@ -3,14 +3,8 @@
 import React, { useState, useEffect } from 'react';
 import { apiUrl } from '../lib/api';
 
-// Defer EXIF parsing library to reduce initial bundle size
-let EXIFLibPromise;
-const loadEXIF = async () => {
-  if (!EXIFLibPromise) {
-    EXIFLibPromise = import('exif-js');
-  }
-  return EXIFLibPromise.then(mod => mod.default || mod);
-};
+// Location checks removed for claiming bounty; EXIF parsing bypassed
+const loadEXIF = async () => null;
 
 const WasteBounty = ({ updatePoints, currentUser }) => {
     const [activeTab, setActiveTab] = useState('report'); // 'report', 'bounties', 'cleanup'
@@ -99,71 +93,9 @@ const WasteBounty = ({ updatePoints, currentUser }) => {
 
     useEffect(() => { loadLeaderboard(); }, []);
 
-    const getCurrentLocation = () => {
-        return new Promise((resolve, reject) => {
-            if (!navigator.geolocation) {
-                reject(new Error('Geolocation is not supported by this browser'));
-                return;
-            }
-            
-            navigator.geolocation.getCurrentPosition(
-                (position) => {
-                    resolve({
-                        latitude: position.coords.latitude,
-                        longitude: position.coords.longitude
-                    });
-                },
-                (error) => {
-                    reject(new Error('Unable to get current location: ' + error.message));
-                },
-                {
-                    enableHighAccuracy: true,
-                    timeout: 10000,
-                    maximumAge: 300000 // 5 minutes
-                }
-            );
-        });
-    };
+    const getCurrentLocation = () => Promise.resolve(null);
 
-    const validateGeotag = (file, photoSource = 'camera') => {
-        return new Promise((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onload = async (e) => {
-                const img = new Image();
-                img.onload = async () => {
-                    try {
-                        const EXIF = await loadEXIF();
-                        EXIF.getData(img, function() {
-                            const lat = EXIF.getTag(this, "GPSLatitude");
-                            const latRef = EXIF.getTag(this, "GPSLatitudeRef");
-                            const lon = EXIF.getTag(this, "GPSLongitude");
-                            const lonRef = EXIF.getTag(this, "GPSLongitudeRef");
-                            
-                            if (lat && latRef && lon && lonRef) {
-                                resolve({ hasGPS: true, file: file });
-                            } else if (photoSource === 'gallery') {
-                                getCurrentLocation()
-                                    .then((location) => {
-                                        resolve({ hasGPS: false, file: file, location: location });
-                                    })
-                                    .catch(() => {
-                                        resolve({ hasGPS: false, file: file });
-                                    });
-                            } else {
-                                reject(new Error('📸 Camera photo must have GPS data. Please enable location services and take a new photo, or choose from gallery instead.'));
-                            }
-                        });
-                    } catch (ex) {
-                        console.warn('EXIF parse failed:', ex);
-                        resolve({ hasGPS: false, file: file });
-                    }
-                };
-                img.src = e.target.result;
-            };
-            reader.onerror = () => reject(new Error('Failed to read file'));
-            reader.readAsDataURL(file);
-        });
-    };
+    const validateGeotag = async (file) => ({ hasGPS: true, file });
 
     const handleReportPhotoChange = async (event) => {
         const file = event.target.files[0];
@@ -533,9 +465,9 @@ const WasteBounty = ({ updatePoints, currentUser }) => {
                 <div className="space-y-6">
                     <div className="bg-white/5 border border-white/10 rounded-xl p-6">
                         <h3 className="text-lg font-semibold text-gray-100 mb-4">Report a Public Waste Spot</h3>
-                        <p className="text-gray-400 text-sm mb-4">
-                            Take a photo of any waste in public areas - streets, parks, rivers, canals, markets, or any polluted location. The photo must contain GPS location data.
-                        </p>
+                            <p className="text-gray-400 text-sm mb-4">
+                            Take a photo of any waste in public areas - streets, parks, rivers, canals, markets, or any polluted location.
+                            </p>
                         <div className="bg-blue-500/10 border border-blue-500/20 rounded-lg p-3 mb-4">
                             <p className="text-blue-300 text-sm">
                                 <strong>Supported locations:</strong> Rivers, canals, lakes, parks, streets, markets, construction sites, industrial areas, and any public space with visible waste or pollution.
@@ -591,9 +523,7 @@ const WasteBounty = ({ updatePoints, currentUser }) => {
                                     <p className="text-gray-300 font-medium">
                                         {reportPhotoSource === 'camera' ? 'Take Photo with Camera' : 'Choose from Gallery'}
                                     </p>
-                                    <p className="text-sm text-gray-400 mt-1">
-                                        {reportPhotoSource === 'camera' ? 'GPS location required' : 'GPS will be added automatically if missing'}
-                                    </p>
+                                    <p className="text-sm text-gray-400 mt-1">No GPS required</p>
                                     {reportPhoto && (
                                         <p className="text-sm text-eco-green mt-2 font-semibold">
                                             Photo selected: {reportPhoto.name}
@@ -633,7 +563,7 @@ const WasteBounty = ({ updatePoints, currentUser }) => {
             {activeTab === 'bounties' && (
                 <div className="space-y-4">
                     <div className="flex items-center justify-between">
-                        <h3 className="text-lg font-semibold text-gray-100">Available Bounties in Your Area</h3>
+                        <h3 className="text-lg font-semibold text-gray-100">Available Bounties</h3>
                         <button
                             onClick={loadBounties}
                             disabled={loading}
@@ -788,7 +718,7 @@ const WasteBounty = ({ updatePoints, currentUser }) => {
                             Cleanup: Bounty #{selectedBounty.id}
                         </h3>
                         <p className="text-gray-400 text-sm mb-4">
-                            Take two photos: one before cleanup and one after. Both must contain GPS location data and be within 100 meters of the bounty location.
+                            Take two photos: one before cleanup and one after. Gemini will verify the cleanup.
                         </p>
 
                         <div className="space-y-6">
@@ -839,9 +769,7 @@ const WasteBounty = ({ updatePoints, currentUser }) => {
                                         <p className="text-gray-300 font-medium">
                                             {beforePhotoSource === 'camera' ? 'Take Before Photo' : 'Choose Before Photo'}
                                         </p>
-                                        <p className="text-sm text-gray-400 mt-1">
-                                            {beforePhotoSource === 'camera' ? 'Show the waste before cleaning' : 'GPS will be added automatically if missing'}
-                                        </p>
+                                        <p className="text-sm text-gray-400 mt-1">Show the waste before cleaning</p>
                                         {beforePhoto && (
                                             <p className="text-sm text-eco-green mt-2 font-semibold">
                                                 Photo selected: {beforePhoto.name}
@@ -905,9 +833,7 @@ const WasteBounty = ({ updatePoints, currentUser }) => {
                                         <p className="text-gray-300 font-medium">
                                             {afterPhotoSource === 'camera' ? 'Take After Photo' : 'Choose After Photo'}
                                         </p>
-                                        <p className="text-sm text-gray-400 mt-1">
-                                            {afterPhotoSource === 'camera' ? 'Show the area after cleaning' : 'GPS will be added automatically if missing'}
-                                        </p>
+                                        <p className="text-sm text-gray-400 mt-1">Show the area after cleaning</p>
                                         {afterPhoto && (
                                             <p className="text-sm text-eco-green mt-2 font-semibold">
                                                 Photo selected: {afterPhoto.name}

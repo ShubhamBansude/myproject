@@ -156,6 +156,121 @@ const RewardsShop = ({ onRedeem }) => {
   );
 };
 
+const FriendsPanel = () => {
+  const token = localStorage.getItem('authToken');
+  const [friends, setFriends] = useState([]);
+  const [pendingIn, setPendingIn] = useState([]);
+  const [pendingOut, setPendingOut] = useState([]);
+  const [addUsername, setAddUsername] = useState('');
+  const [dmWith, setDmWith] = useState('');
+  const [messages, setMessages] = useState([]);
+  const [text, setText] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const load = async () => {
+    setError('');
+    try {
+      const r = await fetch(apiUrl('/api/friends'), { headers: { Authorization: `Bearer ${token}` } });
+      const d = await r.json();
+      if (!r.ok) { setError(d?.error||'Failed to load'); return; }
+      setFriends(d.friends||[]);
+      setPendingIn(d.pending_incoming||[]);
+      setPendingOut(d.pending_outgoing||[]);
+    } catch { setError('Network error.'); }
+  };
+  useEffect(()=>{ if (token) load(); }, [token]);
+  const add = async () => {
+    const u = (addUsername||'').trim(); if (!u) return;
+    setLoading(true); setError('');
+    try {
+      const r = await fetch(apiUrl('/api/friends/add'), { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ username: u }) });
+      const d = await r.json();
+      if (!r.ok) { setError(d?.error||'Failed'); } else { setAddUsername(''); await load(); }
+    } catch { setError('Network error.'); } finally { setLoading(false); }
+  };
+  const decide = async (u, decision) => {
+    try { const r = await fetch(apiUrl('/api/friends/decision'), { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ username: u, decision })}); const d = await r.json(); if (r.ok) load(); else setError(d?.error||'Failed'); } catch { setError('Network error.'); }
+  };
+  const loadDm = async (u) => {
+    setDmWith(u); setLoading(true); setError('');
+    try { const r = await fetch(apiUrl(`/api/dm?with=${encodeURIComponent(u)}`), { headers: { Authorization: `Bearer ${token}` } }); const d = await r.json(); if (!r.ok) { setError(d?.error||'Failed'); setMessages([]); } else setMessages(d.messages||[]); } catch { setError('Network error.'); } finally { setLoading(false); }
+  };
+  const sendDm = async () => {
+    const body = (text||'').trim(); if (!body || !dmWith) return;
+    setLoading(true);
+    try { const r = await fetch(apiUrl('/api/dm'), { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ to: dmWith, message: body }) }); const d = await r.json(); if (r.ok) { setMessages((m)=>[...m, d.message]); setText(''); } else setError(d?.error||'Failed'); } catch { setError('Network error.'); } finally { setLoading(false); }
+  };
+  return (
+    <div className="grid gap-4 md:grid-cols-[1.1fr_1.2fr]">
+      <div className="rounded-xl bg-white/5 border border-white/10 p-4">
+        <div className="text-gray-100 text-lg font-semibold mb-2">Friends</div>
+        {error && <div className="p-2 text-sm text-red-300 bg-red-500/10 border border-red-500/20 rounded mb-2">{error}</div>}
+        <div className="mb-3 flex items-center gap-2">
+          <input type="text" value={addUsername} onChange={(e)=>setAddUsername(e.target.value)} placeholder="Add by username" className="flex-1 px-3 py-2 rounded bg-black/40 border border-white/10 text-gray-100" />
+          <button onClick={add} disabled={loading} className="px-3 py-2 rounded bg-eco-green text-eco-dark font-semibold">Add</button>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div>
+            <div className="text-gray-300 text-sm mb-1">Your friends</div>
+            <div className="space-y-2 max-h-48 overflow-auto pr-1">
+              {friends.map(f => (
+                <button key={f.username} onClick={()=>loadDm(f.username)} className="w-full text-left p-2 rounded bg-white/5 border border-white/10 hover:bg-white/10 text-gray-100 text-sm">@{f.username}</button>
+              ))}
+              {friends.length===0 && <div className="text-gray-400 text-xs">No friends yet.</div>}
+            </div>
+          </div>
+          <div>
+            <div className="text-gray-300 text-sm mb-1">Requests</div>
+            <div className="space-y-2 max-h-48 overflow-auto pr-1">
+              {pendingIn.map(u => (
+                <div key={u} className="p-2 rounded bg-white/5 border border-white/10 flex items-center justify-between">
+                  <span className="text-gray-100 text-sm">@{u}</span>
+                  <div className="flex items-center gap-2 text-xs">
+                    <button onClick={()=>decide(u,'accept')} className="px-2 py-1 rounded bg-eco-green/20 text-eco-green">Accept</button>
+                    <button onClick={()=>decide(u,'reject')} className="px-2 py-1 rounded bg-red-500/20 text-red-200">Reject</button>
+                  </div>
+                </div>
+              ))}
+              {pendingIn.length===0 && <div className="text-gray-400 text-xs">No incoming.</div>}
+              {pendingOut.length>0 && (
+                <div className="text-gray-400 text-xs mt-2">Outgoing: {pendingOut.map(u=>'@'+u).join(', ')}</div>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+      <div className="rounded-xl bg-white/5 border border-white/10 p-4">
+        <div className="text-gray-100 text-lg font-semibold mb-2">Direct Messages</div>
+        {!dmWith ? (
+          <div className="text-gray-400 text-sm">Select a friend to chat.</div>
+        ) : (
+          <div className="flex flex-col h-80">
+            <div className="flex items-center justify-between mb-2">
+              <div className="text-gray-300 text-sm">Chatting with @{dmWith}</div>
+              <button onClick={()=>loadDm(dmWith)} disabled={loading} className="text-xs text-gray-300 hover:text-white">{loading?'Loading…':'Refresh'}</button>
+            </div>
+            <div className="flex-1 overflow-auto space-y-2 pr-1">
+              {messages.map(m => (
+                <div key={m.id} className="flex items-start gap-2">
+                  <div className="flex-1">
+                    <div className="text-xs text-gray-400"><span className="text-gray-200 font-semibold">@{m.sender_username}</span> <span className="ml-2 text-[10px] opacity-70">{new Date((m.created_at||'').replace(' ','T')+'Z').toLocaleString()}</span></div>
+                    <div className="text-sm text-gray-100 whitespace-pre-wrap">{m.message}</div>
+                  </div>
+                </div>
+              ))}
+              {messages.length===0 && !loading && <div className="text-xs text-gray-400">No messages yet.</div>}
+            </div>
+            <div className="mt-2 flex items-center gap-2">
+              <input type="text" value={text} onChange={(e)=>setText(e.target.value)} placeholder="Type a message…" className="flex-1 px-3 py-2 rounded bg-black/40 border border-white/10 text-gray-100" />
+              <button onClick={sendDm} disabled={!text.trim()||loading} className={`px-3 py-2 rounded text-sm font-semibold ${(!text.trim()||loading)?'bg-gray-500/40 text-gray-300':'bg-eco-green text-eco-dark'}`}>Send</button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
 const ProfileView = ({ user, setCurrentUser, lifetimePoints }) => {
   const [openChange, setOpenChange] = useState(false);
   const [email, setEmail] = useState(user.email || '');
@@ -387,6 +502,7 @@ const Dashboard = ({ currentUser, onLogout, setCurrentUser }) => {
     { key: 'scan', label: 'Smart Waste Scan', icon: '♻️' },
     { key: 'bounty', label: 'Waste Bounty', icon: '🗺️' },
     { key: 'clans', label: 'Clans', icon: '🛡️' },
+    { key: 'friends', label: 'Friends & Chat', icon: '💬' },
     { key: 'leaderboard', label: 'Leaderboard', icon: '🏆' },
     { key: 'rewards', label: 'Rewards', icon: '🎁' },
     { key: 'profile', label: 'Profile', icon: '👤' },
@@ -399,6 +515,8 @@ const Dashboard = ({ currentUser, onLogout, setCurrentUser }) => {
     main = <WasteBounty currentUser={currentUser} updatePoints={updatePoints} />;
   } else if (activeTab === 'clans') {
     main = <ClansPanel currentUser={currentUser} />;
+  } else if (activeTab === 'friends') {
+    main = <FriendsPanel />;
   } else if (activeTab === 'leaderboard') {
     main = <Leaderboard />;
   } else if (activeTab === 'rewards') {
