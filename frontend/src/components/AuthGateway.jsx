@@ -249,13 +249,13 @@ const Signup = ({ onSignupSuccess }) => {
         e.preventDefault();
         setError(null);
 
-        if (!username.trim() || !email.trim() || !password.trim() || !confirmPassword.trim() || !country.trim() || !region.trim() || !city.trim() || !district.trim()) {
-            setError('Please fill all fields.');
+        if (!username.trim() || !password.trim() || !confirmPassword.trim() || !country.trim() || !region.trim() || !city.trim() || !district.trim()) {
+            setError('Please fill all required fields.');
             return;
         }
         // Minimal email validation
         const emailVal = email.trim();
-        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailVal)) {
+        if (emailVal && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailVal)) {
             setError('Please enter a valid email address.');
             return;
         }

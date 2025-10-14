@@ -1162,12 +1162,14 @@ def signup() -> Tuple[Any, int]:
 	city: str = (data.get('city') or '').strip()
 	district: str = (data.get('district') or '').strip()
 
-	if not username or not email or not password or not country or not state or not city:
-		return jsonify({"error": "username, email, password, country, state, and city are required"}), 400
+	# Email is optional now; keep other fields required
+	if not username or not password or not country or not state or not city:
+		return jsonify({"error": "username, password, country, state, and city are required"}), 400
 
-	# Minimal email format check
-	if '@' not in email or '.' not in email.split('@')[-1]:
-		return jsonify({"error": "invalid email address"}), 400
+	# Minimal email format check (only when provided)
+	if email:
+		if '@' not in email or '.' not in email.split('@')[-1]:
+			return jsonify({"error": "invalid email address"}), 400
 
 	# Hash password
 	password_bytes = password.encode('utf-8')
@@ -1176,7 +1178,7 @@ def signup() -> Tuple[Any, int]:
 
 	try:
 		with get_db_connection() as conn:
-			# Enforce uniqueness for username and email
+			# Enforce uniqueness for username and email (when provided)
 			existing_u = conn.execute(
 				'SELECT 1 FROM users WHERE TRIM(LOWER(username)) = TRIM(LOWER(?))',
 				(username,)
@@ -1184,23 +1186,26 @@ def signup() -> Tuple[Any, int]:
 			if existing_u:
 				return jsonify({"error": "username already exists"}), 409
 
-			existing_e = conn.execute(
-				'SELECT 1 FROM users WHERE TRIM(LOWER(email)) = TRIM(LOWER(?))',
-				(email,)
-			).fetchone()
-			if existing_e:
-				return jsonify({"error": "email already exists"}), 409
+			if email:
+				existing_e = conn.execute(
+					'SELECT 1 FROM users WHERE TRIM(LOWER(email)) = TRIM(LOWER(?))',
+					(email,)
+				).fetchone()
+				if existing_e:
+					return jsonify({"error": "email already exists"}), 409
 
 			# Persist district when provided; otherwise DB default of "Unknown" applies
+			# When email omitted, store unique placeholder to satisfy NOT NULL/UNIQUE constraints
+			email_to_store = email if email else f"{username.lower()}@noemail.local"
 			if district:
 				conn.execute(
 					'INSERT INTO users (username, email, password_hash, total_points, country, state, city, district) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-					(username, email, password_hash, 100, country, state, city, district),
+					(username, email_to_store, password_hash, 100, country, state, city, district),
 				)
 			else:
 				conn.execute(
 					'INSERT INTO users (username, email, password_hash, total_points, country, state, city) VALUES (?, ?, ?, ?, ?, ?, ?)',
-					(username, email, password_hash, 100, country, state, city),
+					(username, email_to_store, password_hash, 100, country, state, city),
 				)
 			conn.commit()
 	except sqlite3.IntegrityError:
@@ -1211,7 +1216,7 @@ def signup() -> Tuple[Any, int]:
 
 	user = {
 		"username": username,
-		"email": email,
+		"email": (email or None),
 		"total_points": 100,
 		"country": country,
 		"state": state,
