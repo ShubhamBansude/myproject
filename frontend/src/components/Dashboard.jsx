@@ -1,6 +1,7 @@
 // src/components/Dashboard.jsx
 
 import React, { useState, useEffect, lazy, Suspense, useRef } from 'react';
+import { apiUrl } from '../lib/api';
 
 // Lazy-load heavy tab panels to split Dashboard chunk
 const EarnPoints = lazy(() => import('./EarnPoints'));
@@ -20,7 +21,7 @@ const RewardsShop = ({ onRedeem }) => {
     const load = async () => {
       setLoading(true); setError('');
       try {
-        const res = await fetch('http://localhost:5000/api/coupons', { headers: { Authorization: `Bearer ${token}` } });
+        const res = await fetch(apiUrl('/api/coupons'), { headers: { Authorization: `Bearer ${token}` } });
         const data = await res.json();
         if (!res.ok) throw new Error(data?.error || 'Failed to load coupons');
         setCoupons(data.coupons || []);
@@ -36,7 +37,7 @@ const RewardsShop = ({ onRedeem }) => {
   const redeem = async (couponId) => {
     setError('');
     try {
-      const res = await fetch('http://localhost:5000/api/redeem', {
+      const res = await fetch(apiUrl('/api/redeem'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ coupon_id: couponId })
@@ -53,7 +54,7 @@ const RewardsShop = ({ onRedeem }) => {
   const redeemCertificate = async () => {
     setError(''); setRedeemingCert(true);
     try {
-      const res = await fetch('http://localhost:5000/api/redeem_certificate', {
+      const res = await fetch(apiUrl('/api/redeem_certificate'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({})
@@ -138,7 +139,7 @@ const ProfileView = ({ user, setCurrentUser, lifetimePoints }) => {
     e.preventDefault(); setError(''); setMessage('');
     if (!newUsername.trim()) { setError('Enter a new username.'); return; }
     try {
-      const res = await fetch('http://localhost:5000/api/request_username_change', {
+      const res = await fetch(apiUrl('/api/request_username_change'), {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: email.trim(), new_username: newUsername.trim() })
       });
@@ -153,7 +154,7 @@ const ProfileView = ({ user, setCurrentUser, lifetimePoints }) => {
     e.preventDefault(); setError(''); setMessage('');
     if (!otp.trim()) { setError('Enter the OTP received by email.'); return; }
     try {
-      const res = await fetch('http://localhost:5000/api/confirm_username_change', {
+      const res = await fetch(apiUrl('/api/confirm_username_change'), {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: email.trim(), otp: otp.trim() })
       });
@@ -253,7 +254,7 @@ const Dashboard = ({ currentUser, onLogout, setCurrentUser }) => {
   const fetchStats = async () => {
     const token = localStorage.getItem('authToken');
     try {
-      const res = await fetch('http://localhost:5000/api/stats', { headers: { Authorization: `Bearer ${token}` } });
+      const res = await fetch(apiUrl('/api/stats'), { headers: { Authorization: `Bearer ${token}` } });
       const data = await res.json();
       if (res.ok) setStats({ detections: data.detections || 0, redemptions: data.redemptions || 0, lifetime_points: data.lifetime_points || 0 });
     } catch {
@@ -269,7 +270,7 @@ const Dashboard = ({ currentUser, onLogout, setCurrentUser }) => {
     if (!token) return;
     const load = async () => {
       try {
-        const res = await fetch('http://localhost:5000/api/notifications', {
+        const res = await fetch(apiUrl('/api/notifications'), {
           headers: { Authorization: `Bearer ${token}` },
         });
         const data = await res.json();
@@ -290,7 +291,7 @@ const Dashboard = ({ currentUser, onLogout, setCurrentUser }) => {
     const token = localStorage.getItem('authToken');
     if (!token) return;
     try {
-      const es = new EventSource(`http://localhost:5000/api/notifications/stream?token=${encodeURIComponent(token)}`);
+      const es = new EventSource(apiUrl(`/api/notifications/stream?token=${encodeURIComponent(token)}`));
       eventSourceRef.current = es;
       es.onmessage = (evt) => {
         try {
@@ -323,7 +324,7 @@ const Dashboard = ({ currentUser, onLogout, setCurrentUser }) => {
   const markAllNotificationsRead = async () => {
     const token = localStorage.getItem('authToken');
     try {
-      const res = await fetch('http://localhost:5000/api/notifications/read', {
+      const res = await fetch(apiUrl('/api/notifications/read'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ all: true }),

@@ -1,6 +1,7 @@
 // src/components/EarnPoints.jsx
 
 import React, { useState, useEffect } from 'react';
+import { apiUrl } from '../lib/api';
 
 const EarnPoints = ({ updatePoints }) => {
     const [file, setFile] = useState(null);
@@ -90,7 +91,7 @@ const EarnPoints = ({ updatePoints }) => {
             // Add input type to form data
             formData.append('input_type', inputType);
 
-            const res = await fetch('http://localhost:5000/api/analyze-detailed', {
+            const res = await fetch(apiUrl('/api/analyze-detailed'), {
                 method: 'POST',
                 headers: { 'Authorization': `Bearer ${token}` },
                 body: formData
@@ -145,7 +146,7 @@ const EarnPoints = ({ updatePoints }) => {
             // Add input type to form data
             formData.append('input_type', inputType);
 
-            const res = await fetch('http://localhost:5000/api/detect', {
+            const res = await fetch(apiUrl('/api/detect'), {
                 method: 'POST',
                 headers: { 'Authorization': `Bearer ${token}` },
                 body: formData

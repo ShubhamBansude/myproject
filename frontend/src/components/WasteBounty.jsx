@@ -1,6 +1,7 @@
 // src/components/WasteBounty.jsx
 
 import React, { useState, useEffect } from 'react';
+import { apiUrl } from '../lib/api';
 
 // Defer EXIF parsing library to reduce initial bundle size
 let EXIFLibPromise;
@@ -62,7 +63,7 @@ const WasteBounty = ({ updatePoints, currentUser }) => {
         
         try {
             const token = localStorage.getItem('authToken');
-            const res = await fetch('http://localhost:5000/api/bounties', {
+            const res = await fetch(apiUrl('/api/bounties'), {
                 headers: { 'Authorization': `Bearer ${token}` }
             });
             
@@ -84,8 +85,8 @@ const WasteBounty = ({ updatePoints, currentUser }) => {
         setLbLoading(true); setLbError('');
         try {
             const [uRes, cRes] = await Promise.all([
-                fetch('http://localhost:5000/api/leaderboard/users?limit=10'),
-                fetch('http://localhost:5000/api/leaderboard/clans?limit=10'),
+                fetch(apiUrl('/api/leaderboard/users?limit=10')),
+                fetch(apiUrl('/api/leaderboard/clans?limit=10')),
             ]);
             const uData = await uRes.json();
             const cData = await cRes.json();
@@ -290,7 +291,7 @@ const WasteBounty = ({ updatePoints, currentUser }) => {
 
             console.log('Submitting bounty with photo:', reportPhoto.name, 'Size:', reportPhoto.size);
 
-            const res = await fetch('http://localhost:5000/api/create_bounty', {
+            const res = await fetch(apiUrl('/api/create_bounty'), {
                 method: 'POST',
                 headers: { 'Authorization': `Bearer ${token}` },
                 body: formData
@@ -339,7 +340,7 @@ const WasteBounty = ({ updatePoints, currentUser }) => {
         const token = localStorage.getItem('authToken');
         setChatLoadingByBounty((m) => ({ ...m, [bountyId]: true }));
         try {
-            const res = await fetch(`http://localhost:5000/api/bounty_chat?bounty_id=${encodeURIComponent(bountyId)}`, {
+            const res = await fetch(apiUrl(`/api/bounty_chat?bounty_id=${encodeURIComponent(bountyId)}`), {
                 headers: { 'Authorization': `Bearer ${token}` }
             });
             const data = await res.json();
@@ -361,7 +362,7 @@ const WasteBounty = ({ updatePoints, currentUser }) => {
         if (!text) return;
         setChatLoadingByBounty((m) => ({ ...m, [bountyId]: true }));
         try {
-            const res = await fetch('http://localhost:5000/api/bounty_chat', {
+            const res = await fetch(apiUrl('/api/bounty_chat'), {
                 method: 'POST',
                 headers: {
                     'Authorization': `Bearer ${token}`,
@@ -389,7 +390,7 @@ const WasteBounty = ({ updatePoints, currentUser }) => {
     const deleteChatMessage = async (bountyId, messageId) => {
         const token = localStorage.getItem('authToken');
         try {
-            const res = await fetch(`http://localhost:5000/api/bounty_chat/${messageId}`, {
+            const res = await fetch(apiUrl(`/api/bounty_chat/${messageId}`), {
                 method: 'DELETE',
                 headers: { 'Authorization': `Bearer ${token}` }
             });
@@ -431,7 +432,7 @@ const WasteBounty = ({ updatePoints, currentUser }) => {
                 formData.append('after_longitude', String(afterLocation.longitude));
             }
 
-            const res = await fetch('http://localhost:5000/api/verify_cleanup', {
+            const res = await fetch(apiUrl('/api/verify_cleanup'), {
                 method: 'POST',
                 headers: { 'Authorization': `Bearer ${token}` },
                 body: formData
@@ -684,7 +685,7 @@ const WasteBounty = ({ updatePoints, currentUser }) => {
                                         </div>
                                         <div className="ml-4">
                                             <img
-                                                src={`http://localhost:5000${bounty.waste_image_url}`}
+                                                src={apiUrl(bounty.waste_image_url)}
                                                 alt="Waste spot"
                                                 className="w-20 h-20 object-cover rounded-lg"
                                                 loading="lazy"

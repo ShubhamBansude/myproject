@@ -2,6 +2,7 @@
 
 import React, { useMemo, useState } from 'react';
 import { Country, State, City } from 'country-state-city';
+import { apiUrl } from '../lib/api';
 
 const Login = ({ onLoginSuccess, onForgot }) => {
     const [username, setUsername] = useState('');
@@ -19,7 +20,7 @@ const Login = ({ onLoginSuccess, onForgot }) => {
         }
 
         try {
-            const res = await fetch('http://localhost:5000/api/login', {
+            const res = await fetch(apiUrl('/api/login'), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ username: username.trim(), password: password.trim() })
@@ -131,7 +132,7 @@ const ForgotPassword = ({ onBackToLogin }) => {
             return;
         }
         try {
-            const res = await fetch('http://localhost:5000/api/request_password_reset', {
+            const res = await fetch(apiUrl('/api/request_password_reset'), {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ email: emailVal })
             });
@@ -149,7 +150,7 @@ const ForgotPassword = ({ onBackToLogin }) => {
         setError(''); setMessage('');
         if (!otp.trim() || !newPassword.trim()) { setError('Enter OTP and new password.'); return; }
         try {
-            const res = await fetch('http://localhost:5000/api/reset_password', {
+            const res = await fetch(apiUrl('/api/reset_password'), {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ email: email.trim(), otp: otp.trim(), new_password: newPassword.trim() })
             });
@@ -265,7 +266,7 @@ const Signup = ({ onSignupSuccess }) => {
         }
 
         try {
-            const res = await fetch('http://localhost:5000/api/signup', {
+            const res = await fetch(apiUrl('/api/signup'), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ 

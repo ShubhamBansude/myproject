@@ -1,6 +1,7 @@
 // src/components/Leaderboard.jsx
 
 import React, { useEffect, useState } from 'react';
+import { apiUrl } from '../lib/api';
 
 const RankBadge = ({ rank }) => {
   const stylesByRank = {
@@ -67,8 +68,8 @@ const Leaderboard = () => {
     setLoading(true); setError('');
     try {
       const [uRes, cRes] = await Promise.all([
-        fetch('http://localhost:5000/api/leaderboard/users?limit=10'),
-        fetch('http://localhost:5000/api/leaderboard/clans?limit=10'),
+        fetch(apiUrl('/api/leaderboard/users?limit=10')),
+        fetch(apiUrl('/api/leaderboard/clans?limit=10')),
       ]);
       const [uData, cData] = await Promise.all([uRes.json(), cRes.json()]);
       if (uRes.ok) setTopUsers(Array.isArray(uData.users) ? uData.users : []); else setError(uData?.error || 'Failed to load users leaderboard');
