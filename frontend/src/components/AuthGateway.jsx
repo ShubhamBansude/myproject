@@ -417,7 +417,8 @@ const AuthGateway = ({ onAuthSuccess }) => {
 
             <div className="relative z-10 w-full max-w-md">
                 <div className="mb-6 text-center">
-                    <div className="inline-flex items-center space-x-2">
+                    <div className="inline-flex items-center space-x-3">
+                        <img src="/swachh-bharat.svg" alt="Swachh Bharat" className="h-6 w-auto opacity-90" />
                         <span className="text-gray-100 font-extrabold text-2xl">Waste</span>
                         <span className="text-eco-green font-extrabold text-2xl">Rewards</span>
                     </div>

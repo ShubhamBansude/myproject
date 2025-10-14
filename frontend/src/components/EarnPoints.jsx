@@ -194,7 +194,7 @@ const EarnPoints = ({ updatePoints }) => {
 
     return (
         <div className="">
-            <h3 className="text-2xl font-semibold text-gray-100 mb-6">Analyze & Earn Points</h3>
+            <h3 className="text-2xl font-semibold text-gray-100 mb-6">Smart Waste Scan</h3>
             
             {/* Input Type Selection */}
             <div className="mb-6">
