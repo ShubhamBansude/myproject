@@ -12,6 +12,8 @@ const RewardsShop = ({ onRedeem }) => {
   const [coupons, setCoupons] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [certUrl, setCertUrl] = useState('');
+  const [redeemingCert, setRedeemingCert] = useState(false);
   const token = localStorage.getItem('authToken');
 
   useEffect(() => {
@@ -48,11 +50,66 @@ const RewardsShop = ({ onRedeem }) => {
     }
   };
 
+  const redeemCertificate = async () => {
+    setError(''); setRedeemingCert(true);
+    try {
+      const res = await fetch('http://localhost:5000/api/redeem_certificate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({})
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || 'Certificate redeem failed');
+      onRedeem(data.total_points, true);
+      setCertUrl(data.certificate_url);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setRedeemingCert(false);
+    }
+  };
+
   return (
     <div>
       {loading && <div className="text-gray-300">Loading...</div>}
       {error && <div className="p-3 mb-3 text-sm text-red-300 bg-red-500/10 border border-red-500/20 rounded">{error}</div>}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        {/* Carbon Warrior Certificate card */}
+        <div className="rounded-xl bg-white/5 border border-white/10 p-4 relative overflow-hidden">
+          <div className="absolute inset-0 pointer-events-none">
+            <div className="absolute -top-8 -right-8 w-48 h-48 bg-emerald-500/20 rounded-full blur-2xl" />
+            <div className="absolute -bottom-8 -left-8 w-48 h-48 bg-amber-400/20 rounded-full blur-2xl" />
+          </div>
+          <div className="flex items-center gap-3">
+            <img src="/swachh-bharat.svg" alt="Swachh Bharat" className="h-8 w-auto" />
+            <img src="/vpkbiet-logo.png" alt="VPKBIET" className="h-8 w-auto ml-1 opacity-90" />
+            <div>
+              <div className="text-lg font-semibold text-gray-100">Carbon Warrior Certificate</div>
+              <div className="text-sm text-gray-300">Personalized certificate with your username</div>
+            </div>
+          </div>
+          <div className="mt-3 text-xs text-gray-400">
+            Features themed design with cleanliness and recycling motifs, Swachh Bharat Mission logo and VPKBIET logo.
+          </div>
+          <div className="mt-3 flex items-center justify-between">
+            <span className="px-3 py-1 rounded-full bg-eco-green/20 text-eco-green border border-eco-green/30 text-sm">1500 pts</span>
+            <button onClick={redeemCertificate} disabled={redeemingCert} className="px-3 py-2 rounded-lg bg-eco-green text-white text-sm hover:brightness-110 disabled:opacity-60">
+              {redeemingCert ? 'Generating…' : 'Redeem'}
+            </button>
+          </div>
+          {certUrl && (
+            <div className="mt-4 p-3 rounded-lg bg-black/30 border border-white/10">
+              <div className="text-gray-200 text-sm font-medium mb-2">Your Certificate</div>
+              <div className="flex gap-2">
+                <a href={certUrl} target="_blank" rel="noreferrer" className="px-3 py-2 rounded-md bg-white/10 border border-white/20 text-gray-100 text-sm hover:bg-white/20">Open</a>
+                <a href={certUrl.replace('/certificates/', '/certificates/download/')} className="px-3 py-2 rounded-md bg-eco-green text-eco-dark text-sm hover:brightness-110">Download</a>
+              </div>
+              <div className="mt-3 h-48 bg-white/5 border border-white/10 rounded-md overflow-hidden">
+                <iframe title="certificate" src={certUrl} className="w-full h-full"></iframe>
+              </div>
+            </div>
+          )}
+        </div>
         {coupons.map(c => (
           <div key={c.id} className="rounded-xl bg-white/5 border border-white/10 p-4">
             <div className="text-lg font-semibold text-gray-100">{c.name}</div>
