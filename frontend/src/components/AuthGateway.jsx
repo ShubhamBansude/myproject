@@ -67,24 +67,18 @@ const Login = ({ onLoginSuccess, onForgot }) => {
 };
 
 
-// Lightweight auto-suggest input for locations with A–Z quick filter
+// Lightweight auto-suggest input for locations without A–Z letter bar
 const AutoSuggestInput = ({ label, placeholder, value, onChange, onSelect, suggestions, inputProps = {} }) => {
     const [open, setOpen] = useState(false);
-    const [activeLetter, setActiveLetter] = useState(''); // '', 'A'..'Z'
-
-    const letters = useMemo(() => 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split(''), []);
 
     const filtered = useMemo(() => {
-        const q = (value || '').trim().toLowerCase();
-        let list = Array.isArray(suggestions) ? suggestions : [];
-        if (activeLetter) {
-            list = list.filter((s) => (s || '').toLowerCase().startsWith(activeLetter.toLowerCase()));
-            if (q) list = list.filter((s) => s.toLowerCase().startsWith(q));
-            return list.slice(0, 15);
-        }
-        if (!q) return [];
-        return list.filter((s) => s.toLowerCase().startsWith(q)).slice(0, 15);
-    }, [value, suggestions, activeLetter]);
+        const query = (value || '').trim().toLowerCase();
+        const list = Array.isArray(suggestions) ? suggestions : [];
+        if (!query) return [];
+        return list.filter((s) => (s || '').toLowerCase().startsWith(query)).slice(0, 15);
+    }, [value, suggestions]);
+
+    const hasSuggestions = open && filtered.length > 0;
 
     return (
         <div className="relative">
@@ -96,35 +90,11 @@ const AutoSuggestInput = ({ label, placeholder, value, onChange, onSelect, sugge
                 onChange={(e) => { onChange(e.target.value); setOpen(true); }}
                 onFocus={() => setOpen(true)}
                 onBlur={() => setTimeout(() => setOpen(false), 120)}
-                className="w-full px-4 py-3 rounded-xl bg-white/5 border border-white/10 text-gray-100 placeholder:text-gray-400 focus:outline-none focus:border-eco-green focus:ring-2 focus:ring-eco-green/30 transition"
+                className={`w-full px-4 py-3 rounded-xl text-gray-100 placeholder:text-gray-400 focus:outline-none transition ${hasSuggestions ? 'bg-eco-green/10 border border-eco-green focus:ring-2 focus:ring-eco-green/40' : 'bg-white/5 border border-white/10 focus:border-eco-green focus:ring-2 focus:ring-eco-green/30'}`}
                 {...inputProps}
             />
             {open && (
-                <div className="absolute z-20 mt-1 w-full max-h-64 overflow-auto rounded-lg bg-[#0f172a]/95 border border-white/10 shadow-2xl">
-                    {/* A–Z letter bar */}
-                    <div className="sticky top-0 bg-[#0f172a]/95 border-b border-white/10 p-2">
-                        <div className="flex flex-wrap gap-1">
-                            <button
-                                type="button"
-                                onMouseDown={(e) => e.preventDefault()}
-                                onClick={() => setActiveLetter('')}
-                                className={`px-2 py-1 rounded text-xs ${activeLetter==='' ? 'bg-eco-green text-eco-dark' : 'bg-white/5 text-gray-200 hover:bg-white/10'}`}
-                            >
-                                All
-                            </button>
-                            {letters.map((L) => (
-                                <button
-                                    key={L}
-                                    type="button"
-                                    onMouseDown={(e) => e.preventDefault()}
-                                    onClick={() => { setActiveLetter(L); setOpen(true); }}
-                                    className={`w-7 text-center px-1 py-1 rounded text-xs ${activeLetter===L ? 'bg-eco-green text-eco-dark' : 'bg-white/5 text-gray-200 hover:bg-white/10'}`}
-                                >
-                                    {L}
-                                </button>
-                            ))}
-                        </div>
-                    </div>
+                <div className={`absolute z-20 mt-1 w-full max-h-72 overflow-auto rounded-lg border shadow-2xl backdrop-blur-sm ${hasSuggestions ? 'bg-emerald-900/90 border-emerald-400/30' : 'bg-[#0f172a]/95 border-white/10'}`}>
                     {/* Suggestions */}
                     {filtered.length > 0 ? (
                         filtered.map((s, idx) => (
@@ -133,7 +103,7 @@ const AutoSuggestInput = ({ label, placeholder, value, onChange, onSelect, sugge
                                 type="button"
                                 onMouseDown={(e) => e.preventDefault()}
                                 onClick={() => { (onSelect ? onSelect(s) : onChange(s)); setOpen(false); }}
-                                className="w-full text-left px-3 py-2 text-sm text-gray-200 hover:bg-white/10"
+                                className="w-full text-left px-3 py-2 text-sm text-gray-200 hover:bg-emerald-500/20"
                             >
                                 {s}
                             </button>

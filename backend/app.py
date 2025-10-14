@@ -2441,12 +2441,12 @@ def verify_cleanup_with_gemini(original_image: np.ndarray, before_image: np.ndar
 		# Initialize Gemini model
 		model = genai.GenerativeModel('gemini-2.0-flash')
 		
-		# Use the enhanced prompt for comprehensive waste detection
-		prompt = """Analyze this sequence of three images for cleanup verification: Image 1 (Original Report Photo), Image 2 (User's Before Cleanup), and Image 3 (User's After Cleanup). GPS has confirmed Image 2 and 3 are at the correct location.
+		# Use the enhanced prompt for comprehensive waste detection without relying on GPS
+		prompt = """Analyze this sequence of three images for cleanup verification: Image 1 (Original Report Photo), Image 2 (User's Before Cleanup), and Image 3 (User's After Cleanup).
 
-Scene Match: Based on static background features (e.g., walls, trees, unique objects, water bodies, landscape), confirm if Image 2 and Image 3 show the exact same scene/viewpoint (excluding the garbage itself). (Respond with: scene_match: true/false).
+Scene Match: Using only visual cues (static background features such as walls, trees, unique objects, landmarks, shorelines, etc.), determine if Image 2 and Image 3 show the same scene/viewpoint (exclude the garbage itself). Respond strictly with: scene_match: true/false.
 
-Waste Verification: Is there significant garbage, waste, or pollution visible in Image 2? This includes:
+Waste Verification: Is there significant garbage, waste, or pollution visible in Image 2? This includes (non-exhaustive):
 - Plastic waste, bottles, bags, containers
 - Organic waste, food scraps, leaves
 - Construction debris, rubble, materials
@@ -2461,7 +2461,7 @@ Cleanup Result: Is the garbage, waste, or pollution visible in Image 2 now absen
 - Restoration of clean appearance
 - Improvement in environmental condition
 
-Respond with a JSON object: {'scene_match': [true/false], 'waste_present_before': [true/false], 'cleanup_verified': [true/false]}."""
+Respond with a compact JSON object only (no prose): {"scene_match": [true/false], "waste_present_before": [true/false], "cleanup_verified": [true/false]}"""
 		
 		# Generate response
 		response = model.generate_content([prompt] + images)
