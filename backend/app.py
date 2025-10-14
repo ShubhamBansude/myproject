@@ -35,7 +35,7 @@ try:
     import google.generativeai as genai
 except Exception:
     genai = None
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
 
 DB_PATH = os.path.join(os.path.dirname(__file__), 'rewards_db.sqlite')
@@ -841,6 +841,18 @@ def init_db() -> None:
 				')'
 			)
 		)
+		# Per-user certificate issuance table (enforce one-time issuance)
+		conn.execute(
+			(
+				'CREATE TABLE IF NOT EXISTS user_certificates ('
+				'  id INTEGER PRIMARY KEY AUTOINCREMENT,'
+				'  user_id INTEGER NOT NULL UNIQUE,'
+				'  filename TEXT NOT NULL,'
+				'  issued_at DATETIME DEFAULT CURRENT_TIMESTAMP,'
+				'  FOREIGN KEY(user_id) REFERENCES users(id)'
+				')'
+			)
+		)
 		# Simple stats table (detections/redemptions counters)
 		conn.execute(
 			'CREATE TABLE IF NOT EXISTS stats ('
@@ -1095,7 +1107,7 @@ def _load_ttf_font(path: str, size: int) -> Optional[ImageFont.FreeTypeFont]:
         return None
 
 
-def generate_carbon_warrior_certificate(username: str) -> str:
+def generate_carbon_warrior_certificate(username: str, meta: Optional[Dict[str, Any]] = None) -> str:
     """
     Generate a themed Carbon Warrior certificate as a single-page PDF.
     Returns the filename (not full path) placed in `_certificates_dir`.
@@ -1104,7 +1116,37 @@ def generate_carbon_warrior_certificate(username: str) -> str:
 
     # Canvas: A4 landscape at ~300dpi -> 3508x2480 px
     width, height = 3508, 2480
-    background = Image.new('RGB', (width, height), color=(248, 250, 252))  # near-white
+    # Work in RGBA for layered effects
+    base = Image.new('RGBA', (width, height), color=(12, 18, 32, 255))  # deep slate to match app backdrop
+
+    # Dotted grid overlay to mimic site background
+    grid_overlay = Image.new('RGBA', (width, height), (0, 0, 0, 0))
+    grid_draw = ImageDraw.Draw(grid_overlay)
+    dot_color = (255, 255, 255, 18)  # subtle white dots
+    step = 44
+    offset = 0
+    for y in range(offset, height, step):
+        for x in range(offset, width, step):
+            grid_draw.ellipse((x, y, x + 3, y + 3), fill=dot_color)
+    base = Image.alpha_composite(base, grid_overlay)
+
+    # Gradient blobs similar to UI accents
+    blob_overlay = Image.new('RGBA', (width, height), (0, 0, 0, 0))
+    blob_draw = ImageDraw.Draw(blob_overlay)
+    # Top-right emerald
+    blob_draw.ellipse([width - 1400, -400, width + 200, 1000], fill=(16, 185, 129, 60))
+    # Bottom-left amber
+    blob_draw.ellipse([-400, height - 1200, 1200, height + 200], fill=(234, 179, 8, 60))
+    blob_overlay = blob_overlay.filter(ImageFilter.GaussianBlur(120))
+    composed = Image.alpha_composite(base, blob_overlay)
+
+    # Card-like bright panel
+    panel = Image.new('RGBA', (width - 160, height - 160), (255, 255, 255, 22))
+    panel = panel.filter(ImageFilter.GaussianBlur(0))
+    composed.paste(panel, (80, 80), panel)
+
+    # Drawing context on composed image
+    background = composed
     draw = ImageDraw.Draw(background)
 
     # Brand border
@@ -1112,13 +1154,13 @@ def generate_carbon_warrior_certificate(username: str) -> str:
     draw.rounded_rectangle(
         [border_margin, border_margin, width - border_margin, height - border_margin],
         radius=40,
-        outline=(34, 197, 94),  # emerald-500
-        width=14,
+        outline=(34, 197, 94, 180),  # emerald-500 with alpha
+        width=10,
     )
 
     # Accent bands
-    draw.rectangle([border_margin + 28, border_margin + 28, width - border_margin - 28, border_margin + 100], fill=(234, 179, 8))  # amber-500
-    draw.rectangle([border_margin + 28, height - border_margin - 100, width - border_margin - 28, height - border_margin - 28], fill=(16, 185, 129))  # emerald-400
+    draw.rectangle([border_margin + 28, border_margin + 28, width - border_margin - 28, border_margin + 100], fill=(234, 179, 8, 210))  # amber-500
+    draw.rectangle([border_margin + 28, height - border_margin - 100, width - border_margin - 28, height - border_margin - 28], fill=(16, 185, 129, 210))  # emerald-400
 
     # Load assets
     assets_dir = os.path.join(os.path.dirname(__file__), 'assets')
@@ -1152,7 +1194,7 @@ def generate_carbon_warrior_certificate(username: str) -> str:
     # Title centered
     title_bbox = draw.textbbox((0, 0), title, font=poppins_bold)
     title_w = title_bbox[2] - title_bbox[0]
-    draw.text(((width - title_w) // 2, border_margin + 440), title, fill=(15, 23, 42), font=poppins_bold)
+    draw.text(((width - title_w) // 2, border_margin + 440), title, fill=(240, 253, 250), font=poppins_bold)
 
     # Username highlight
     username_display = username.strip() or "Participant"
@@ -1167,11 +1209,11 @@ def generate_carbon_warrior_certificate(username: str) -> str:
     draw.rounded_rectangle(
         [name_x - band_padding_x, name_y - band_padding_y, name_x + name_w + band_padding_x, name_y + (name_bbox[3]-name_bbox[1]) + band_padding_y],
         radius=24,
-        fill=(236, 253, 245),
-        outline=(34, 197, 94),
-        width=6,
+        fill=(16, 185, 129, 28),
+        outline=(34, 197, 94, 200),
+        width=4,
     )
-    draw.text((name_x, name_y), username_display, fill=(4, 120, 87), font=name_font)
+    draw.text((name_x, name_y), username_display, fill=(52, 211, 153), font=name_font)
 
     # Citation paragraph
     para_lines = [
@@ -1183,22 +1225,40 @@ def generate_carbon_warrior_certificate(username: str) -> str:
     for i, line in enumerate(para_lines):
         bbox = draw.textbbox((0, 0), line, font=poppins_regular)
         line_w = bbox[2] - bbox[0]
-        draw.text(((width - line_w) // 2, para_y + i * 60), line, fill=(71, 85, 105), font=poppins_regular)
+        draw.text(((width - line_w) // 2, para_y + i * 60), line, fill=(203, 213, 225), font=poppins_regular)
 
     # Compliment tagline
     compliment = "With gratitude for your dedication to a cleaner, greener future."
     comp_bbox = draw.textbbox((0, 0), compliment, font=poppins_semibold)
     comp_w = comp_bbox[2] - comp_bbox[0]
-    draw.text(((width - comp_w) // 2, para_y + 220), compliment, fill=(15, 118, 110), font=poppins_semibold)
+    draw.text(((width - comp_w) // 2, para_y + 220), compliment, fill=(110, 231, 183), font=poppins_semibold)
+
+    # Additional meta info (location, milestone)
+    location_text = None
+    if meta:
+        city = (meta.get('city') or '').strip()
+        state = (meta.get('state') or '').strip()
+        country = (meta.get('country') or '').strip()
+        parts = [p for p in [city, state, country] if p]
+        if parts:
+            location_text = f"Location: {', '.join(parts)}"
+    milestone_text = "Milestone: Achieved 500+ eco points"
+    info_y = para_y + 300
+    if location_text:
+        loc_bbox = draw.textbbox((0, 0), location_text, font=poppins_regular)
+        draw.text(((width - (loc_bbox[2]-loc_bbox[0])) // 2, info_y), location_text, fill=(148, 163, 184), font=poppins_regular)
+        info_y += 56
+    mil_bbox = draw.textbbox((0, 0), milestone_text, font=poppins_regular)
+    draw.text(((width - (mil_bbox[2]-mil_bbox[0])) // 2, info_y), milestone_text, fill=(148, 163, 184), font=poppins_regular)
 
     # Footer: issued date and id
     issued_on = datetime.utcnow().strftime('%Y-%m-%d')
     cert_id = f"CW-{int(time.time())}"
     left_note = f"Issued on: {issued_on}"
     right_note = f"Certificate ID: {cert_id}"
-    draw.text((border_margin + 60, height - border_margin - 180), left_note, fill=(71, 85, 105), font=poppins_regular)
+    draw.text((border_margin + 60, height - border_margin - 180), left_note, fill=(203, 213, 225), font=poppins_regular)
     right_bbox = draw.textbbox((0, 0), right_note, font=poppins_regular)
-    draw.text((width - border_margin - 60 - (right_bbox[2]-right_bbox[0]), height - border_margin - 180), right_note, fill=(71, 85, 105), font=poppins_regular)
+    draw.text((width - border_margin - 60 - (right_bbox[2]-right_bbox[0]), height - border_margin - 180), right_note, fill=(203, 213, 225), font=poppins_regular)
 
     # Signature area
     sig_label = "WasteRewards Program"
@@ -1207,18 +1267,19 @@ def generate_carbon_warrior_certificate(username: str) -> str:
     sig_x = (width - sig_w) // 2
     sig_y = height - border_margin - 240
     draw.line([sig_x - 160, sig_y - 20, sig_x + sig_w + 160, sig_y - 20], fill=(148, 163, 184), width=3)
-    draw.text((sig_x, sig_y), sig_label, fill=(71, 85, 105), font=poppins_regular)
+    draw.text((sig_x, sig_y), sig_label, fill=(203, 213, 225), font=poppins_regular)
 
     # Save to PDF
     safe_username = ''.join(ch for ch in username if ch.isalnum() or ch in ('-', '_')).strip() or 'user'
     filename = f"certificate_{safe_username}_{int(time.time())}.pdf"
     out_path = os.path.join(_certificates_dir, filename)
     try:
-        background.save(out_path, "PDF", resolution=300.0)
+        # Convert to RGB for PDF save
+        background.convert('RGB').save(out_path, "PDF", resolution=300.0)
     except Exception:
         # Fallback: save as PNG then convert to PDF via PIL (single-page)
         png_tmp = out_path.replace('.pdf', '.png')
-        background.save(png_tmp, "PNG")
+        background.convert('RGB').save(png_tmp, "PNG")
         img = Image.open(png_tmp).convert('RGB')
         img.save(out_path, "PDF", resolution=300.0)
         try:
@@ -1231,20 +1292,33 @@ def generate_carbon_warrior_certificate(username: str) -> str:
 @app.route('/api/redeem_certificate', methods=['POST'])
 def redeem_certificate() -> Tuple[Any, int]:
     """
-    Redeem the Carbon Warrior certificate for 1500 points.
+    Redeem the Carbon Warrior certificate for 500 points (one-time only).
     Deduct points, record transaction, increment redemptions, generate certificate PDF,
-    and return the file URL and updated total points.
+    and return the file URL and updated total points. If already issued, returns existing URL.
     """
     username = parse_username_from_auth()
     if not username:
         return jsonify({"error": "missing auth token"}), 401
 
-    COST = 1500
+    COST = 500
     with get_db_connection() as conn:
-        urow = conn.execute('SELECT id, total_points FROM users WHERE username = ?', (username,)).fetchone()
+        urow = conn.execute('SELECT id, total_points, city, state, country FROM users WHERE username = ?', (username,)).fetchone()
         if urow is None:
             return jsonify({"error": "user not found"}), 404
         user_id, total_points = int(urow[0]), int(urow[1])
+
+        # If certificate already issued for this user, return existing URL without charging again
+        existing = conn.execute('SELECT filename FROM user_certificates WHERE user_id = ?', (user_id,)).fetchone()
+        if existing:
+            filename = existing[0]
+            url = f"/certificates/{filename}"
+            return jsonify({
+                "message": "Certificate already issued",
+                "total_points": total_points,
+                "certificate_url": url
+            }), 200
+
+        # Enforce points threshold
         if total_points < COST:
             return jsonify({"error": "insufficient points"}), 400
 
@@ -1257,11 +1331,24 @@ def redeem_certificate() -> Tuple[Any, int]:
 
     # Generate certificate
     try:
-        filename = generate_carbon_warrior_certificate(username)
+        meta = {
+            'city': urow[2] if len(urow) > 2 else None,
+            'state': urow[3] if len(urow) > 3 else None,
+            'country': urow[4] if len(urow) > 4 else None,
+        }
+        filename = generate_carbon_warrior_certificate(username, meta)
         url = f"/certificates/{filename}"
     except Exception as e:
         # On failure, attempt to revert? For simplicity, report error but points already deducted.
         return jsonify({"error": f"failed to generate certificate: {str(e)}"}), 500
+
+    # Persist issuance record to prevent future redemptions
+    try:
+        with get_db_connection() as conn:
+            conn.execute('INSERT OR IGNORE INTO user_certificates (user_id, filename) VALUES (?, ?)', (user_id, filename))
+            conn.commit()
+    except Exception:
+        pass
 
     # Optional: send notification via SSE
     try:
@@ -1277,6 +1364,23 @@ def redeem_certificate() -> Tuple[Any, int]:
         pass
 
     return jsonify({"message": "Certificate redeemed", "total_points": new_total, "certificate_url": url}), 200
+
+
+@app.route('/api/my_certificate', methods=['GET'])
+def get_my_certificate() -> Tuple[Any, int]:
+    username = parse_username_from_auth()
+    if not username:
+        return jsonify({"error": "unauthorized"}), 401
+    with get_db_connection() as conn:
+        urow = conn.execute('SELECT id FROM users WHERE username = ?', (username,)).fetchone()
+        if urow is None:
+            return jsonify({"error": "user not found"}), 404
+        user_id = int(urow[0])
+        row = conn.execute('SELECT filename, issued_at FROM user_certificates WHERE user_id = ?', (user_id,)).fetchone()
+        if not row:
+            return jsonify({"certificate_url": None}), 200
+        filename = row[0]
+        return jsonify({"certificate_url": f"/certificates/{filename}", "issued_at": row[1]}), 200
 
 
 def notify_user(recipient_username: str, payload: Dict[str, Any]) -> None:
