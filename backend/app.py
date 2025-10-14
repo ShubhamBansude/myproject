@@ -1126,8 +1126,15 @@ def validate_and_consume_email_otp(email: str, purpose: str, code_plain: str) ->
             return None
         # Verify
         ok = False
+        # Ensure OTP hash is bytes
+        if isinstance(code_hash, memoryview):
+            code_hash_bytes = code_hash.tobytes()
+        elif isinstance(code_hash, str):
+            code_hash_bytes = code_hash.encode('utf-8')
+        else:
+            code_hash_bytes = bytes(code_hash)
         try:
-            ok = bcrypt.checkpw(code_plain.encode('utf-8'), code_hash)
+            ok = bcrypt.checkpw(code_plain.encode('utf-8'), code_hash_bytes)
         except Exception:
             ok = False
         if not ok:
@@ -1296,9 +1303,16 @@ def login() -> Tuple[Any, int]:
 	if row is None:
 		return jsonify({"error": "invalid credentials"}), 401
 
-	# sqlite3.Row supports key-based access
-	stored_hash: bytes = row[2]
-	if not bcrypt.checkpw(password.encode('utf-8'), stored_hash):
+	# Ensure stored hash is bytes for bcrypt across sqlite variants
+	stored_hash_value = row[2]
+	if isinstance(stored_hash_value, memoryview):
+		stored_hash_bytes = stored_hash_value.tobytes()
+	elif isinstance(stored_hash_value, str):
+		stored_hash_bytes = stored_hash_value.encode('utf-8')
+	else:
+		stored_hash_bytes = bytes(stored_hash_value)
+
+	if not bcrypt.checkpw(password.encode('utf-8'), stored_hash_bytes):
 		return jsonify({"error": "invalid credentials"}), 401
 
 	user = {
