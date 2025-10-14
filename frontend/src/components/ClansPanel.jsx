@@ -1,5 +1,6 @@
 // src/components/ClansPanel.jsx
 import React, { useEffect, useMemo, useState } from 'react';
+import { apiUrl } from '../lib/api';
 
 const ClansPanel = ({ currentUser }) => {
   const [loading, setLoading] = useState(false);
@@ -16,8 +17,8 @@ const ClansPanel = ({ currentUser }) => {
     setError(''); setSuccess(''); setLoading(true);
     try {
       const [mineRes, listRes] = await Promise.all([
-        fetch('http://localhost:5000/api/my_clan', { headers: { Authorization: `Bearer ${token}` } }),
-        fetch('http://localhost:5000/api/clans', { headers: { Authorization: `Bearer ${token}` } }),
+        fetch(apiUrl('/api/my_clan'), { headers: { Authorization: `Bearer ${token}` } }),
+        fetch(apiUrl('/api/clans'), { headers: { Authorization: `Bearer ${token}` } }),
       ]);
       const mine = await mineRes.json();
       const list = await listRes.json();
@@ -34,7 +35,7 @@ const ClansPanel = ({ currentUser }) => {
     e.preventDefault(); setError(''); setSuccess('');
     if (!newClanName.trim()) { setError('Enter a clan name.'); return; }
     try {
-      const res = await fetch('http://localhost:5000/api/clans', {
+      const res = await fetch(apiUrl('/api/clans'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ name: newClanName.trim() }),
@@ -52,7 +53,7 @@ const ClansPanel = ({ currentUser }) => {
     const code = (joinCode || '').trim();
     if (!/^\d{4}$/.test(code)) { setError('Enter 4-digit code.'); return; }
     try {
-      const res = await fetch('http://localhost:5000/api/clans/join', {
+      const res = await fetch(apiUrl('/api/clans/join'), {
         method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ code })
       });
@@ -67,7 +68,7 @@ const ClansPanel = ({ currentUser }) => {
   const leaveClan = async () => {
     if (!window.confirm('Leave clan?')) return;
     try {
-      const res = await fetch('http://localhost:5000/api/my_clan/leave', { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
+      const res = await fetch(apiUrl('/api/my_clan/leave'), { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
       const data = await res.json();
       if (!res.ok) { setError(data?.error || 'Failed to leave clan'); return; }
       setSuccess('Left clan.');
@@ -78,7 +79,7 @@ const ClansPanel = ({ currentUser }) => {
   const kickUser = async (username) => {
     if (!window.confirm(`Kick @${username}?`)) return;
     try {
-      const res = await fetch('http://localhost:5000/api/clans/kick', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ username }) });
+      const res = await fetch(apiUrl('/api/clans/kick'), { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ username }) });
       const data = await res.json();
       if (!res.ok) { setError(data?.error || 'Failed to kick'); return; }
       setSuccess(`Kicked @${username}.`);
@@ -94,7 +95,7 @@ const ClansPanel = ({ currentUser }) => {
   const loadChat = async () => {
     if (!myClan) return; setChatLoading(true); setError('');
     try {
-      const res = await fetch(`http://localhost:5000/api/clan_chat?clan_id=${encodeURIComponent(myClan.id)}`, { headers: { Authorization: `Bearer ${token}` } });
+      const res = await fetch(apiUrl(`/api/clan_chat?clan_id=${encodeURIComponent(myClan.id)}`), { headers: { Authorization: `Bearer ${token}` } });
       const data = await res.json();
       if (!res.ok) { setError(data?.error || 'Failed to load chat'); return; }
       setChatMessages(Array.isArray(data.messages) ? data.messages : []);
@@ -107,7 +108,7 @@ const ClansPanel = ({ currentUser }) => {
     const text = (chatText || '').trim(); if (!text || !myClan) return;
     setChatLoading(true);
     try {
-      const res = await fetch('http://localhost:5000/api/clan_chat', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ clan_id: myClan.id, message: text }) });
+      const res = await fetch(apiUrl('/api/clan_chat'), { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ clan_id: myClan.id, message: text }) });
       const data = await res.json();
       if (!res.ok) { setError(data?.error || 'Failed to send'); return; }
       setChatMessages((prev) => [...prev, data.message]);
@@ -118,7 +119,7 @@ const ClansPanel = ({ currentUser }) => {
   const deleteMessage = async (id) => {
     if (!myClan) return;
     try {
-      const res = await fetch(`http://localhost:5000/api/clan_chat/${id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
+      const res = await fetch(apiUrl(`/api/clan_chat/${id}`), { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
       const data = await res.json();
       if (!res.ok) { setError(data?.error || 'Failed to delete'); return; }
       setChatMessages((prev) => prev.filter(m => m.id !== id));
