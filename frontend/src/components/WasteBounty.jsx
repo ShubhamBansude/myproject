@@ -470,7 +470,7 @@ const WasteBounty = ({ updatePoints, currentUser }) => {
     };
 
     return (
-        <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
+        <div className="w-full space-y-6">
             <div className="space-y-6">
             <div className="flex items-center justify-between">
                 <h2 className="text-2xl font-bold text-gray-100">🗺️ Waste Bounty System</h2>
@@ -547,36 +547,7 @@ const WasteBounty = ({ updatePoints, currentUser }) => {
                             </p>
                         </div>
                         
-                        {/* Manual Location Input for Better City Detection */}
-                        <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-lg p-3 mb-4">
-                            <p className="text-yellow-300 text-sm mb-2">
-                                <strong>📍 Location:</strong> If city is not detected automatically, please specify:
-                            </p>
-                            <div className="flex space-x-2">
-                                <input
-                                    type="text"
-                                    placeholder="City (e.g., Baramati, Pune, Mumbai)"
-                                    value={reportLocation?.city || ''}
-                                    onChange={(e) => {
-                                        if (reportLocation) {
-                                            setReportLocation({...reportLocation, city: e.target.value});
-                                        }
-                                    }}
-                                    className="flex-1 px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white placeholder-gray-400 text-sm"
-                                />
-                                <input
-                                    type="text"
-                                    placeholder="State (e.g., Maharashtra)"
-                                    value={reportLocation?.state || ''}
-                                    onChange={(e) => {
-                                        if (reportLocation) {
-                                            setReportLocation({...reportLocation, state: e.target.value});
-                                        }
-                                    }}
-                                    className="flex-1 px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white placeholder-gray-400 text-sm"
-                                />
-                            </div>
-                        </div>
+                        {null}
                         
                         <div className="space-y-4">
                             {/* Photo Source Selection */}
@@ -969,8 +940,7 @@ const WasteBounty = ({ updatePoints, currentUser }) => {
             )}
             </div>
 
-            {/* Right Sidebar intentionally left empty (Quick Leaderboard removed) */}
-            <aside className="space-y-4" />
+            {null}
         </div>
     );
 };
