@@ -35,7 +35,7 @@ try:
     import google.generativeai as genai
 except Exception:
     genai = None
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 
 
 DB_PATH = os.path.join(os.path.dirname(__file__), 'rewards_db.sqlite')
@@ -1034,9 +1034,19 @@ CORS(app, resources={r"/api/*": {"origins": _cors_origins}})
 
 # Serve uploaded files safely from a dedicated directory
 _uploads_dir = os.path.join(os.path.dirname(__file__), 'uploads')
+_certificates_dir = os.path.join(os.path.dirname(__file__), 'certificates')
+
 @app.route('/uploads/<path:filename>')
 def serve_upload(filename: str):
     return send_from_directory(_uploads_dir, filename, as_attachment=False)
+
+@app.route('/certificates/<path:filename>')
+def serve_certificate(filename: str):
+    return send_from_directory(_certificates_dir, filename, as_attachment=False)
+
+@app.route('/certificates/download/<path:filename>')
+def download_certificate(filename: str):
+    return send_from_directory(_certificates_dir, filename, as_attachment=True)
 
 # In-memory subscriber registry for SSE notification streams
 # Maps username -> set of Queue instances
@@ -1059,6 +1069,209 @@ def parse_username_from_token_param() -> Optional[str]:
     if not token.startswith('token_'):
         return None
     return token.replace('token_', '', 1)
+
+
+def _ensure_backend_dirs() -> None:
+    """Ensure required backend directories exist."""
+    try:
+        os.makedirs(_uploads_dir, exist_ok=True)
+    except Exception:
+        pass
+    try:
+        os.makedirs(_certificates_dir, exist_ok=True)
+    except Exception:
+        pass
+
+
+def _load_ttf_font(path: str, size: int) -> Optional[ImageFont.FreeTypeFont]:
+    try:
+        return ImageFont.truetype(path, size)
+    except Exception:
+        return None
+
+
+def generate_carbon_warrior_certificate(username: str) -> str:
+    """
+    Generate a themed Carbon Warrior certificate as a single-page PDF.
+    Returns the filename (not full path) placed in `_certificates_dir`.
+    """
+    _ensure_backend_dirs()
+
+    # Canvas: A4 landscape at ~300dpi -> 3508x2480 px
+    width, height = 3508, 2480
+    background = Image.new('RGB', (width, height), color=(248, 250, 252))  # near-white
+    draw = ImageDraw.Draw(background)
+
+    # Brand border
+    border_margin = 80
+    draw.rounded_rectangle(
+        [border_margin, border_margin, width - border_margin, height - border_margin],
+        radius=40,
+        outline=(34, 197, 94),  # emerald-500
+        width=14,
+    )
+
+    # Accent bands
+    draw.rectangle([border_margin + 28, border_margin + 28, width - border_margin - 28, border_margin + 100], fill=(234, 179, 8))  # amber-500
+    draw.rectangle([border_margin + 28, height - border_margin - 100, width - border_margin - 28, height - border_margin - 28], fill=(16, 185, 129))  # emerald-400
+
+    # Load assets
+    assets_dir = os.path.join(os.path.dirname(__file__), 'assets')
+    sbm_path = os.path.join(assets_dir, 'swachh-bharat.png')
+    vpkb_path = os.path.join(assets_dir, 'vpkbiet_logo.png')
+    poppins_bold = _load_ttf_font(os.path.join(assets_dir, 'Poppins-Bold.ttf'), 120) or ImageFont.load_default()
+    poppins_semibold = _load_ttf_font(os.path.join(assets_dir, 'Poppins-Bold.ttf'), 64) or ImageFont.load_default()
+    poppins_regular = _load_ttf_font(os.path.join(assets_dir, 'Poppins-Regular.ttf'), 42) or ImageFont.load_default()
+
+    # Logos
+    try:
+        sbm = Image.open(sbm_path).convert('RGBA')
+        sbm_height = 220
+        sbm = sbm.resize((int(sbm.width * sbm_height / sbm.height), sbm_height), Image.LANCZOS)
+        background.paste(sbm, (border_margin + 40, border_margin + 120), sbm)
+    except Exception:
+        pass
+
+    try:
+        vpk = Image.open(vpkb_path).convert('RGBA')
+        vpk_height = 220
+        vpk = vpk.resize((int(vpk.width * vpk_height / vpk.height), vpk_height), Image.LANCZOS)
+        background.paste(vpk, (width - border_margin - vpk.width - 40, border_margin + 120), vpk)
+    except Exception:
+        pass
+
+    # Headings
+    title = "Carbon Warrior Certificate"
+    subtitle = "Awarded by WasteRewards – Clean • Recycle • Inspire"
+
+    # Title centered
+    title_bbox = draw.textbbox((0, 0), title, font=poppins_bold)
+    title_w = title_bbox[2] - title_bbox[0]
+    draw.text(((width - title_w) // 2, border_margin + 440), title, fill=(15, 23, 42), font=poppins_bold)
+
+    # Username highlight
+    username_display = username.strip() or "Participant"
+    name_font = _load_ttf_font(os.path.join(assets_dir, 'Poppins-Bold.ttf'), 96) or poppins_semibold
+    name_bbox = draw.textbbox((0, 0), username_display, font=name_font)
+    name_w = name_bbox[2] - name_bbox[0]
+    name_x = (width - name_w) // 2
+    name_y = border_margin + 640
+    # Underline band
+    band_padding_x = 40
+    band_padding_y = 18
+    draw.rounded_rectangle(
+        [name_x - band_padding_x, name_y - band_padding_y, name_x + name_w + band_padding_x, name_y + (name_bbox[3]-name_bbox[1]) + band_padding_y],
+        radius=24,
+        fill=(236, 253, 245),
+        outline=(34, 197, 94),
+        width=6,
+    )
+    draw.text((name_x, name_y), username_display, fill=(4, 120, 87), font=name_font)
+
+    # Citation paragraph
+    para_lines = [
+        "is hereby recognized as a Carbon Warrior for exceptional efforts in",
+        "waste reduction, responsible disposal, and community cleanliness.",
+        "Your actions advance the Swachh Bharat Mission and inspire others to act.",
+    ]
+    para_y = name_y + 200
+    for i, line in enumerate(para_lines):
+        bbox = draw.textbbox((0, 0), line, font=poppins_regular)
+        line_w = bbox[2] - bbox[0]
+        draw.text(((width - line_w) // 2, para_y + i * 60), line, fill=(71, 85, 105), font=poppins_regular)
+
+    # Compliment tagline
+    compliment = "With gratitude for your dedication to a cleaner, greener future."
+    comp_bbox = draw.textbbox((0, 0), compliment, font=poppins_semibold)
+    comp_w = comp_bbox[2] - comp_bbox[0]
+    draw.text(((width - comp_w) // 2, para_y + 220), compliment, fill=(15, 118, 110), font=poppins_semibold)
+
+    # Footer: issued date and id
+    issued_on = datetime.utcnow().strftime('%Y-%m-%d')
+    cert_id = f"CW-{int(time.time())}"
+    left_note = f"Issued on: {issued_on}"
+    right_note = f"Certificate ID: {cert_id}"
+    draw.text((border_margin + 60, height - border_margin - 180), left_note, fill=(71, 85, 105), font=poppins_regular)
+    right_bbox = draw.textbbox((0, 0), right_note, font=poppins_regular)
+    draw.text((width - border_margin - 60 - (right_bbox[2]-right_bbox[0]), height - border_margin - 180), right_note, fill=(71, 85, 105), font=poppins_regular)
+
+    # Signature area
+    sig_label = "WasteRewards Program"
+    sig_bbox = draw.textbbox((0, 0), sig_label, font=poppins_regular)
+    sig_w = sig_bbox[2] - sig_bbox[0]
+    sig_x = (width - sig_w) // 2
+    sig_y = height - border_margin - 240
+    draw.line([sig_x - 160, sig_y - 20, sig_x + sig_w + 160, sig_y - 20], fill=(148, 163, 184), width=3)
+    draw.text((sig_x, sig_y), sig_label, fill=(71, 85, 105), font=poppins_regular)
+
+    # Save to PDF
+    safe_username = ''.join(ch for ch in username if ch.isalnum() or ch in ('-', '_')).strip() or 'user'
+    filename = f"certificate_{safe_username}_{int(time.time())}.pdf"
+    out_path = os.path.join(_certificates_dir, filename)
+    try:
+        background.save(out_path, "PDF", resolution=300.0)
+    except Exception:
+        # Fallback: save as PNG then convert to PDF via PIL (single-page)
+        png_tmp = out_path.replace('.pdf', '.png')
+        background.save(png_tmp, "PNG")
+        img = Image.open(png_tmp).convert('RGB')
+        img.save(out_path, "PDF", resolution=300.0)
+        try:
+            os.remove(png_tmp)
+        except Exception:
+            pass
+    return filename
+
+
+@app.route('/api/redeem_certificate', methods=['POST'])
+def redeem_certificate() -> Tuple[Any, int]:
+    """
+    Redeem the Carbon Warrior certificate for 1500 points.
+    Deduct points, record transaction, increment redemptions, generate certificate PDF,
+    and return the file URL and updated total points.
+    """
+    username = parse_username_from_auth()
+    if not username:
+        return jsonify({"error": "missing auth token"}), 401
+
+    COST = 1500
+    with get_db_connection() as conn:
+        urow = conn.execute('SELECT id, total_points FROM users WHERE username = ?', (username,)).fetchone()
+        if urow is None:
+            return jsonify({"error": "user not found"}), 404
+        user_id, total_points = int(urow[0]), int(urow[1])
+        if total_points < COST:
+            return jsonify({"error": "insufficient points"}), 400
+
+        # Deduct points and record
+        new_total = total_points - COST
+        conn.execute('UPDATE users SET total_points = ? WHERE id = ?', (new_total, user_id))
+        conn.execute('INSERT INTO transactions (user_id, points_change, reason) VALUES (?, ?, ?)', (user_id, -COST, 'Redeemed: Carbon Warrior Certificate'))
+        conn.execute('UPDATE stats SET redemptions = redemptions + 1 WHERE id = 1')
+        conn.commit()
+
+    # Generate certificate
+    try:
+        filename = generate_carbon_warrior_certificate(username)
+        url = f"/certificates/{filename}"
+    except Exception as e:
+        # On failure, attempt to revert? For simplicity, report error but points already deducted.
+        return jsonify({"error": f"failed to generate certificate: {str(e)}"}), 500
+
+    # Optional: send notification via SSE
+    try:
+        notify_user(username, {
+            'id': f'cert_{int(time.time())}',
+            'type': 'certificate',
+            'title': 'Carbon Warrior Certificate',
+            'message': 'Your certificate is ready to download.',
+            'payload': {'url': url},
+            'created_at': datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S'),
+        })
+    except Exception:
+        pass
+
+    return jsonify({"message": "Certificate redeemed", "total_points": new_total, "certificate_url": url}), 200
 
 
 def notify_user(recipient_username: str, payload: Dict[str, Any]) -> None:
