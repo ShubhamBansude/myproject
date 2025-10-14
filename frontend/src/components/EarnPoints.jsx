@@ -450,7 +450,7 @@ const EarnPoints = ({ updatePoints }) => {
                                                         ? 'bg-yellow-400' 
                                                         : 'bg-red-400'
                                             }`}></span>
-                                            Gemini AI {
+                                            Detected With AI {
                                                 detectionResult.gemini_analysis?.available 
                                                     ? 'Active' 
                                                     : detectionResult.gemini_analysis?.fallback 
@@ -496,7 +496,7 @@ const EarnPoints = ({ updatePoints }) => {
                                     </h3>
                                     <div className="flex items-center gap-2">
                                         <span className="px-2 py-1 bg-green-500/20 text-green-300 text-xs rounded-full border border-green-500/30">
-                                            Gemini AI Active
+                                        Detected With AI
                                         </span>
                                         {detailedAnalysis.potential_points > 0 && (
                                             <span className="px-2 py-1 bg-eco-green/20 text-eco-green text-xs rounded-full border border-eco-green/30">
