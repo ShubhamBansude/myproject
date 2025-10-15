@@ -346,7 +346,7 @@ const ClansPanel = ({ currentUser }) => {
               )}
             </div>
             <div className="mt-2 flex items-center gap-2">
-              <input type="text" value={chatText} onChange={(e)=>setChatText(e.target.value)} placeholder="Type a message…" className="flex-1 px-3 py-2 rounded bg-black/40 border border-white/10 text-gray-100" />
+              <input type="text" value={chatText} onChange={(e)=>setChatText(e.target.value)} placeholder="Type a message…" className="flex-1 px-3 py-2 rounded bg-black/40 border border-white/10 text-gray-100" onKeyDown={(e)=>{ if(e.key==='Enter'){ e.preventDefault(); sendChat(); } }} />
               <button onClick={sendChat} disabled={!chatText.trim() || chatLoading} className={`px-3 py-2 rounded text-sm font-semibold ${(!chatText.trim()||chatLoading)?'bg-gray-500/40 text-gray-300':'bg-eco-green text-eco-dark'}`}>Send</button>
             </div>
           </div>
