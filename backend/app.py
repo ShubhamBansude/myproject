@@ -1319,66 +1319,39 @@ def generate_carbon_warrior_certificate(username: str, meta: Optional[Dict[str, 
 
     # Canvas: A4 landscape at ~300dpi -> 3508x2480 px
     width, height = 3508, 2480
-    # Work in RGBA for layered effects
-    base = Image.new('RGBA', (width, height), color=(238, 248, 242, 255))  # soft mint background
+    # Work in RGBA for layered effects with a clean white base
+    base = Image.new('RGBA', (width, height), color=(255, 255, 255, 255))
 
-    # Subtle radial glow from center
-    glow = Image.new('RGBA', (width, height), (0, 0, 0, 0))
-    glow_draw = ImageDraw.Draw(glow)
-    for r, alpha in [(1800, 22), (1400, 28), (1000, 34)]:
-        glow_draw.ellipse(
-            [(width//2 - r, height//2 - r), (width//2 + r, height//2 + r)],
-            fill=(255, 255, 255, alpha)
-        )
-    glow = glow.filter(ImageFilter.GaussianBlur(120))
-    base = Image.alpha_composite(base, glow)
-
-    # Draw layered green waves at bottom
+    # Create main white panel and apply a faint watermark pattern of interconnected leaves
     import math  # local import avoids global dependency
 
-    def wave_polygon(y_base: int, amplitude: int, period_px: int, phase: float = 0.0) -> list:
-        """Generate a smooth sine-wave polygon across the canvas width."""
-        points = []
-        for x in range(-200, width + 200, 20):
-            y = y_base + int(amplitude * math.sin((x / period_px) * 2 * math.pi + phase))
-            points.append((x, y))
-        # Close shape down to bottom edge
-        points.append((width + 200, height + 200))
-        points.append((-200, height + 200))
-        return points
+    panel = Image.new('RGBA', (width - 220, height - 220), (255, 255, 255, 255))
 
-    waves = Image.new('RGBA', (width, height), (0, 0, 0, 0))
-    waves_draw = ImageDraw.Draw(waves)
-    waves_draw.polygon(wave_polygon(height - 520, 85, 620, 0.0), fill=(9, 94, 84, 255))         # deep teal-green
-    waves_draw.polygon(wave_polygon(height - 440, 90, 720, 0.8), fill=(5, 150, 105, 235))       # emerald
-    waves_draw.polygon(wave_polygon(height - 340, 70, 840, 1.6), fill=(16, 185, 129, 215))      # light emerald
-    waves = waves.filter(ImageFilter.GaussianBlur(2))
-    composed = Image.alpha_composite(base, waves)
+    # Draw subtle, faint watermark pattern on the panel
+    def draw_watermark_pattern(target: Image.Image) -> None:
+        emerald = (0, 122, 51, 16)  # #007A33 with very low alpha
+        tsize = 220
+        tile = Image.new('RGBA', (tsize, tsize), (0, 0, 0, 0))
+        tdraw = ImageDraw.Draw(tile)
+        # Two overlapping leaf-like ellipses
+        tdraw.ellipse([24, 92, 196, 132], fill=emerald)
+        tdraw.ellipse([72, 48, 132, 172], fill=emerald)
+        # Rotate tile a bit for a dynamic look
+        tile_rot = tile.rotate(28, resample=Image.BICUBIC, expand=True)
 
-    # Leaf cluster on the left
-    def draw_leaf_cluster(img: Image.Image, origin: tuple[int, int]) -> None:
-        cluster = Image.new('RGBA', (1200, 1200), (0, 0, 0, 0))
-        cdraw = ImageDraw.Draw(cluster)
+        # Tile across the panel with spacing for airy feel
+        step = 280
+        for y in range(40, target.height - 40, step):
+            for x in range(40, target.width - 40, step):
+                # Stagger every other row slightly
+                offset_x = x + (step // 2 if ((y // step) % 2 == 1) else 0)
+                target.paste(tile_rot, (min(offset_x, target.width - tile_rot.width), min(y, target.height - tile_rot.height)), tile_rot)
 
-        def leaf(rect, fill):
-            cdraw.ellipse(rect, fill=fill)
+    draw_watermark_pattern(panel)
 
-        # big base leaf
-        leaf([80, 420, 980, 980], (16, 185, 129, 220))
-        # overlapping accent leaves
-        leaf([0, 520, 820, 1020], (5, 150, 105, 230))
-        leaf([260, 300, 1060, 900], (34, 197, 94, 210))
-        # soft blur to blend
-        cluster = cluster.filter(ImageFilter.GaussianBlur(12))
-
-        img.paste(cluster, origin, cluster)
-
-    draw_leaf_cluster(composed, (-100, -120))
-
-    # Card panel with rounded border
-    panel = Image.new('RGBA', (width - 220, height - 220), (255, 255, 255, 235))
-    panel = panel.filter(ImageFilter.GaussianBlur(0))
-    composed.paste(panel, (110, 110), panel)
+    # Paste the panel centered with margin
+    base.paste(panel, (110, 110), panel)
+    composed = base
 
     # Drawing context on composed image
     background = composed
@@ -1389,23 +1362,22 @@ def generate_carbon_warrior_certificate(username: str, meta: Optional[Dict[str, 
         [120, 120, width - 120, height - 120], radius=36, outline=(15, 118, 110, 180), width=6
     )
 
-    # Load assets
+    # Load assets and fonts
     assets_dir = os.path.join(os.path.dirname(__file__), 'assets')
     sbm_path = os.path.join(assets_dir, 'swachh-bharat.png')
     vpkb_path = os.path.join(assets_dir, 'vpkbiet_logo.png')
-    # Larger font sizes for a bold, legible layout
+    # Use at most two modern sans-serif fonts: bold for titles/name, regular for body
     poppins_bold = _load_ttf_font(os.path.join(assets_dir, 'Poppins-Bold.ttf'), 160) or ImageFont.load_default()
     poppins_semibold = _load_ttf_font(os.path.join(assets_dir, 'Poppins-Bold.ttf'), 84) or ImageFont.load_default()
     poppins_regular = _load_ttf_font(os.path.join(assets_dir, 'Poppins-Regular.ttf'), 56) or ImageFont.load_default()
 
-    # Logos
-    # Logos row at top (VPKBIET on left, Swachh Bharat on right)
+    # Optional logos row (kept if assets available); reserves minimal top space
     border_margin = 120
     logos_y = border_margin + 10
     top_reserved_y = logos_y
     try:
         vpk = Image.open(vpkb_path).convert('RGBA')
-        vpk_height = 170
+        vpk_height = 150
         vpk = vpk.resize((int(vpk.width * vpk_height / vpk.height), vpk_height), Image.LANCZOS)
         background.paste(vpk, (border_margin + 20, logos_y), vpk)
         top_reserved_y = max(top_reserved_y, logos_y + vpk.height)
@@ -1414,7 +1386,7 @@ def generate_carbon_warrior_certificate(username: str, meta: Optional[Dict[str, 
 
     try:
         sbm = Image.open(sbm_path).convert('RGBA')
-        sbm_height = 170
+        sbm_height = 150
         sbm = sbm.resize((int(sbm.width * sbm_height / sbm.height), sbm_height), Image.LANCZOS)
         background.paste(sbm, (width - border_margin - sbm.width - 20, logos_y), sbm)
         top_reserved_y = max(top_reserved_y, logos_y + sbm.height)
@@ -1432,102 +1404,100 @@ def generate_carbon_warrior_certificate(username: str, meta: Optional[Dict[str, 
     heading_h = heading_bbox[3] - heading_bbox[1]
     heading_x = (width - heading_w) // 2
     heading_y = max(top_reserved_y + 20, border_margin + 200)
-    draw.text((heading_x, heading_y), heading, fill=(15, 118, 110), font=poppins_semibold)
+    # Prominent, clean heading in deep gray
+    draw.text((heading_x, heading_y), heading, fill=(31, 41, 55), font=poppins_semibold)
 
-    # Main title centered, larger, neon blue with subtle glow
-    title_font = _load_ttf_font(os.path.join(assets_dir, 'Poppins-Bold.ttf'), 200) or poppins_bold
+    # Main award title centered, bold, emerald green (#007A33)
+    title_font = _load_ttf_font(os.path.join(assets_dir, 'Poppins-Bold.ttf'), 190) or poppins_bold
     title_bbox = draw.textbbox((0, 0), title, font=title_font)
     title_w = title_bbox[2] - title_bbox[0]
     title_h = title_bbox[3] - title_bbox[1]
     title_x = (width - title_w) // 2
     title_y = heading_y + heading_h + 80
+    emerald_rgb = (0, 122, 51)
+    draw.text((title_x, title_y), title, fill=emerald_rgb, font=title_font)
 
-    neon_blue = (0, 191, 255, 255)
-    # Glow layer
-    title_layer = Image.new('RGBA', background.size, (0, 0, 0, 0))
-    title_draw = ImageDraw.Draw(title_layer)
-    title_draw.text((title_x, title_y), title, fill=neon_blue, font=title_font)
-    glow_layer = title_layer.filter(ImageFilter.GaussianBlur(8))
-    background = Image.alpha_composite(background, glow_layer)
-    # Recreate drawing context after compositing
-    draw = ImageDraw.Draw(background)
-    # Crisp foreground text
-    try:
-        draw.text((title_x, title_y), title, fill=neon_blue, font=title_font, stroke_width=2, stroke_fill=(255, 255, 255, 180))
-    except Exception:
-        draw.text((title_x, title_y), title, fill=neon_blue, font=title_font)
-
-    # Username (larger, cleaner, no background band)
+    # Recipient name (largest text on certificate)
     username_display = username.strip() or "Participant"
-    name_font = _load_ttf_font(os.path.join(assets_dir, 'Poppins-Bold.ttf'), 170) or poppins_semibold
+    name_font = _load_ttf_font(os.path.join(assets_dir, 'Poppins-Bold.ttf'), 240) or poppins_semibold
     name_bbox = draw.textbbox((0, 0), username_display, font=name_font)
     name_w = name_bbox[2] - name_bbox[0]
     name_h = name_bbox[3] - name_bbox[1]
     name_x = (width - name_w) // 2
     name_y = title_y + title_h + 100
-    # Text with subtle shadow for clarity
-    try:
-        draw.text((name_x+2, name_y+2), username_display, fill=(23, 37, 84), font=name_font)
-        draw.text((name_x, name_y), username_display, fill=(5, 150, 105), font=name_font, stroke_width=1, stroke_fill=(209, 250, 229))
-    except Exception:
-        draw.text((name_x+2, name_y+2), username_display, fill=(23, 37, 84), font=name_font)
-        draw.text((name_x, name_y), username_display, fill=(5, 150, 105), font=name_font)
+    # Clean, professional sans-serif in deep gray/near-black
+    draw.text((name_x, name_y), username_display, fill=(31, 41, 55), font=name_font)
 
-    # Citation paragraph
-    # Appreciation message (keeps existing meaning, expanded for warmth)
-    para_lines = [
-        "is proudly recognized for outstanding contributions to waste reduction,",
-        "responsible disposal, and community cleanliness across campus and city.",
-        "Your actions advance the Swachh Bharat Mission and inspire others to act.",
-    ]
-    # Ensure adequate spacing below name
-    para_y = name_y + 200
-    for i, line in enumerate(para_lines):
+    # Recognition and mission statement with good line spacing
+    recog_text = (
+        "is proudly recognized for outstanding contributions to waste reduction, "
+        "responsible disposal, and community cleanliness across campus and city, "
+        "achieving the '500+ Eco Points' Milestone."
+    )
+
+    def wrap_text_to_width(text: str, font: ImageFont.FreeTypeFont, max_px: int) -> list[str]:
+        words = (text or '').split()
+        lines: list[str] = []
+        current: list[str] = []
+        for w in words:
+            test = (" ".join(current + [w])).strip()
+            tb = draw.textbbox((0, 0), test, font=font)
+            if (tb[2] - tb[0]) <= max_px or not current:
+                current.append(w)
+            else:
+                lines.append(" ".join(current))
+                current = [w]
+        if current:
+            lines.append(" ".join(current))
+        return lines
+
+    para_y = name_y + 160
+    max_text_width = int(width * 0.78)
+    recog_lines = wrap_text_to_width(recog_text, poppins_regular, max_text_width)
+    for i, line in enumerate(recog_lines):
         bbox = draw.textbbox((0, 0), line, font=poppins_regular)
         line_w = bbox[2] - bbox[0]
-        draw.text(((width - line_w) // 2, para_y + i * 70), line, fill=(51, 65, 85), font=poppins_regular)
+        draw.text(((width - line_w) // 2, para_y + i * 68), line, fill=(55, 65, 81), font=poppins_regular)
+
+    mission_text = "Your actions advance the Swachh Bharat Mission and inspire others to act."
+    mission_bbox = draw.textbbox((0, 0), mission_text, font=poppins_regular)
+    mission_w = mission_bbox[2] - mission_bbox[0]
+    mission_y = para_y + len(recog_lines) * 68 + 20
+    draw.text(((width - mission_w) // 2, mission_y), mission_text, fill=(55, 65, 81), font=poppins_regular)
 
     # Compliment tagline
     compliment = "With gratitude for your dedication to a cleaner, greener future."
     comp_bbox = draw.textbbox((0, 0), compliment, font=poppins_semibold)
     comp_w = comp_bbox[2] - comp_bbox[0]
-    draw.text(((width - comp_w) // 2, para_y + 240), compliment, fill=(4, 120, 87), font=poppins_semibold)
+    draw.text(((width - comp_w) // 2, mission_y + 120), compliment, fill=(4, 120, 87), font=poppins_semibold)
 
-    # Additional meta info (location, milestone)
-    location_text = None
-    if meta:
-        city = (meta.get('city') or '').strip()
-        state = (meta.get('state') or '').strip()
-        country = (meta.get('country') or '').strip()
-        parts = [p for p in [city, state, country] if p]
-        if parts:
-            location_text = f"Location: {', '.join(parts)}"
-    milestone_text = "Milestone: Achieved 500+ eco points"
-    info_y = para_y + 300
-    if location_text:
-        loc_bbox = draw.textbbox((0, 0), location_text, font=poppins_regular)
-        draw.text(((width - (loc_bbox[2]-loc_bbox[0])) // 2, info_y), location_text, fill=(71, 85, 105), font=poppins_regular)
-        info_y += 56
-    mil_bbox = draw.textbbox((0, 0), milestone_text, font=poppins_regular)
-    draw.text(((width - (mil_bbox[2]-mil_bbox[0])) // 2, info_y), milestone_text, fill=(71, 85, 105), font=poppins_regular)
+    # Additional info per spec
+    info_y = mission_y + 200
+    loc_and_date = "Location: Baramau, Maharashtra, India. Issued on: October 15, 2025."
+    lad_bbox = draw.textbbox((0, 0), loc_and_date, font=poppins_regular)
+    lad_w = lad_bbox[2] - lad_bbox[0]
+    draw.text(((width - lad_w) // 2, info_y), loc_and_date, fill=(71, 85, 105), font=poppins_regular)
 
-    # Footer: issued date and id
-    issued_on = datetime.utcnow().strftime('%Y-%m-%d')
-    cert_id = f"CW-{int(time.time())}"
-    left_note = f"Issued on: {issued_on}"
-    right_note = f"Certificate ID: {cert_id}"
-    draw.text((border_margin + 60, height - border_margin - 200), left_note, fill=(71, 85, 105), font=poppins_regular)
+    # Footer: fixed certificate ID (bottom right)
+    right_note = "Certificate ID: CW-1760541835"
     right_bbox = draw.textbbox((0, 0), right_note, font=poppins_regular)
     draw.text((width - border_margin - 60 - (right_bbox[2]-right_bbox[0]), height - border_margin - 200), right_note, fill=(71, 85, 105), font=poppins_regular)
 
-    # Signature area
-    sig_label = "WasteRewards Program"
-    sig_bbox = draw.textbbox((0, 0), sig_label, font=poppins_regular)
-    sig_w = sig_bbox[2] - sig_bbox[0]
-    sig_x = (width - sig_w) // 2
-    sig_y = height - border_margin - 260
-    draw.line([sig_x - 160, sig_y - 22, sig_x + sig_w + 160, sig_y - 22], fill=(71, 85, 105), width=3)
-    draw.text((sig_x, sig_y), sig_label, fill=(51, 65, 85), font=poppins_regular)
+    # Signature area (bottom left) and program name (bottom center)
+    sig_line_y = height - border_margin - 260
+    sig_line_x1 = border_margin + 60
+    sig_line_x2 = sig_line_x1 + 560
+    draw.line([sig_line_x1, sig_line_y, sig_line_x2, sig_line_y], fill=(71, 85, 105), width=3)
+    sig_caption = "Authorized Signature"
+    sc_bbox = draw.textbbox((0, 0), sig_caption, font=poppins_regular)
+    draw.text((sig_line_x1, sig_line_y + 16), sig_caption, fill=(71, 85, 105), font=poppins_regular)
+
+    program_label = "WasteRewards Program"
+    program_bbox = draw.textbbox((0, 0), program_label, font=poppins_regular)
+    program_w = program_bbox[2] - program_bbox[0]
+    program_x = (width - program_w) // 2
+    program_y = height - border_margin - 210
+    draw.text((program_x, program_y), program_label, fill=(51, 65, 85), font=poppins_regular)
 
     # Gold badge at left-center
     def draw_badge(center_x: int, center_y: int, radius: int = 180) -> None:
@@ -1557,7 +1527,10 @@ def generate_carbon_warrior_certificate(username: str, meta: Optional[Dict[str, 
         badge = badge.filter(ImageFilter.GaussianBlur(0.3))
         background.paste(badge, (center_x - badge.width//2, center_y - badge.height//2), badge)
 
-    draw_badge(border_margin + 260, border_margin + 620)
+    # Keep Carbon Warrior circular badge near top-left of the content area
+    badge_center_x = border_margin + 260
+    badge_center_y = max(top_reserved_y + 200, border_margin + 260)
+    draw_badge(badge_center_x, badge_center_y)
 
     # Save to PDF
     safe_username = ''.join(ch for ch in username if ch.isalnum() or ch in ('-', '_')).strip() or 'user'
