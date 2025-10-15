@@ -47,7 +47,10 @@ const WasteBounty = ({ updatePoints, currentUser, bountyToOpen }) => {
 
     // Clan participation modal state
     const [participateOpen, setParticipateOpen] = useState(false);
-    const [participateWhen, setParticipateWhen] = useState(''); // HTML datetime-local value
+    const [participateDate, setParticipateDate] = useState(''); // YYYY-MM-DD (local)
+    const [participateHour, setParticipateHour] = useState(''); // '1'-'12'
+    const [participateMinute, setParticipateMinute] = useState(''); // '00','15','30','45'
+    const [participateAmPm, setParticipateAmPm] = useState('AM'); // 'AM' | 'PM'
     const [peopleStrength, setPeopleStrength] = useState(0);
     const [participateSubmitting, setParticipateSubmitting] = useState(false);
 
@@ -202,6 +205,15 @@ const WasteBounty = ({ updatePoints, currentUser, bountyToOpen }) => {
         const id = setTimeout(() => controller.abort(), timeoutMs);
         return fetch(input, { ...options, signal: controller.signal })
             .finally(() => clearTimeout(id));
+    };
+
+    // Local date helpers
+    const getTodayLocalDateString = () => {
+        const now = new Date();
+        const y = now.getFullYear();
+        const m = String(now.getMonth() + 1).padStart(2, '0');
+        const d = String(now.getDate()).padStart(2, '0');
+        return `${y}-${m}-${d}`;
     };
 
     const validateGeotag = async (file, source) => {
@@ -426,7 +438,28 @@ const WasteBounty = ({ updatePoints, currentUser, bountyToOpen }) => {
     const openParticipateWithClan = (bounty) => {
         setSelectedBounty(bounty);
         setParticipateOpen(true);
-        setParticipateWhen('');
+        // Initialize defaults to next 15-minute slot (local time)
+        try {
+            const now = new Date();
+            const rounded = new Date(now);
+            const minutes = now.getMinutes();
+            const nextQuarter = Math.ceil((minutes + 1) / 15) * 15; // +1 to avoid same slot
+            if (nextQuarter >= 60) {
+                rounded.setHours(now.getHours() + 1, 0, 0, 0);
+            } else {
+                rounded.setMinutes(nextQuarter, 0, 0);
+            }
+            const y = rounded.getFullYear();
+            const m = String(rounded.getMonth() + 1).padStart(2, '0');
+            const d = String(rounded.getDate()).padStart(2, '0');
+            setParticipateDate(`${y}-${m}-${d}`);
+            const rawHour = rounded.getHours();
+            const am = rawHour < 12;
+            const hour12 = ((rawHour + 11) % 12) + 1; // 0->12, 13->1 etc.
+            setParticipateHour(String(hour12));
+            setParticipateMinute(String(rounded.getMinutes()).padStart(2, '0'));
+            setParticipateAmPm(am ? 'AM' : 'PM');
+        } catch { /* noop */ }
         setPeopleStrength(0);
         setSuccess(null);
         setError(null);
@@ -438,10 +471,31 @@ const WasteBounty = ({ updatePoints, currentUser, bountyToOpen }) => {
         if (!token) { setError('Please login first'); return; }
         setParticipateSubmitting(true); setError(''); setSuccess('');
         try {
-            // Convert datetime-local (YYYY-MM-DDTHH:MM) to server format 'YYYY-MM-DD HH:MM:SS'
-            const scheduled_at = participateWhen
-                ? participateWhen.replace('T', ' ') + (participateWhen.length === 16 ? ':00' : '')
-                : null;
+            // Build server datetime 'YYYY-MM-DD HH:MM:SS' from date + 12h time
+            const hasDate = !!participateDate;
+            const hasTime = !!participateHour && !!participateMinute && !!participateAmPm;
+            if (!hasDate || !hasTime) {
+                setError('Please select both date and time.');
+                setParticipateSubmitting(false);
+                return;
+            }
+            const hourNum = Math.max(1, Math.min(12, Number(participateHour) || 12));
+            let hour24 = hourNum % 12; // 12 AM -> 0
+            if (participateAmPm === 'PM') hour24 += 12; // 1-11 PM -> 13-23, 12 PM -> 12
+            const hh = String(hour24).padStart(2, '0');
+            const mm = String(Math.floor(Math.max(0, Math.min(59, Number(participateMinute) || 0)))).padStart(2, '0');
+            const scheduled_at = `${participateDate} ${hh}:${mm}:00`;
+
+            // Enforce not in the past (local time)
+            try {
+                const scheduledLocal = new Date(`${participateDate}T${hh}:${mm}:00`);
+                const now = new Date();
+                if (scheduledLocal.getTime() < now.getTime() - 1000) {
+                    setError('Please select a time in the future.');
+                    setParticipateSubmitting(false);
+                    return;
+                }
+            } catch { /* noop */ }
             const res = await fetch(apiUrl('/api/bounty_clan_claims'), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
@@ -1122,13 +1176,46 @@ const WasteBounty = ({ updatePoints, currentUser, bountyToOpen }) => {
                         <div className="text-xs text-gray-400 mb-3">Select date, time and people strength (0-20). If you are the clan leader, participation is auto-approved and you can turn in. Otherwise, your leader must approve.</div>
                         <div className="space-y-3">
                             <div>
-                                <label className="block text-xs text-gray-300 mb-1">Date & Time</label>
+                                <label className="block text-xs text-gray-300 mb-1">Date</label>
                                 <input
-                                    type="datetime-local"
-                                    value={participateWhen}
-                                    onChange={(e)=>setParticipateWhen(e.target.value)}
+                                    type="date"
+                                    value={participateDate}
+                                    min={getTodayLocalDateString()}
+                                    onChange={(e)=>setParticipateDate(e.target.value)}
                                     className="w-full px-3 py-2 rounded bg-black/40 border border-white/10 text-gray-100"
                                 />
+                            </div>
+                            <div>
+                                <label className="block text-xs text-gray-300 mb-1">Time (12-hour)</label>
+                                <div className="flex items-center gap-2">
+                                    <select
+                                        value={participateHour}
+                                        onChange={(e)=>setParticipateHour(e.target.value)}
+                                        className="flex-1 px-3 py-2 rounded bg-black/40 border border-white/10 text-gray-100"
+                                    >
+                                        {Array.from({ length: 12 }, (_, i) => String(i + 1)).map(h => (
+                                            <option key={h} value={h}>{h}</option>
+                                        ))}
+                                    </select>
+                                    <span className="text-gray-400">:</span>
+                                    <select
+                                        value={participateMinute}
+                                        onChange={(e)=>setParticipateMinute(e.target.value)}
+                                        className="flex-1 px-3 py-2 rounded bg-black/40 border border-white/10 text-gray-100"
+                                    >
+                                        {['00','15','30','45'].map(m => (
+                                            <option key={m} value={m}>{m}</option>
+                                        ))}
+                                    </select>
+                                    <select
+                                        value={participateAmPm}
+                                        onChange={(e)=>setParticipateAmPm(e.target.value)}
+                                        className="px-3 py-2 rounded bg-black/40 border border-white/10 text-gray-100"
+                                    >
+                                        <option value="AM">AM</option>
+                                        <option value="PM">PM</option>
+                                    </select>
+                                </div>
                             </div>
                             <div>
                                 <label className="block text-xs text-gray-300 mb-1">People strength (0-20)</label>
