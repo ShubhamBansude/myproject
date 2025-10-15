@@ -1968,6 +1968,9 @@ def signup() -> Tuple[Any, int]:
 	salt = bcrypt.gensalt()
 	password_hash = bcrypt.hashpw(password_bytes, salt)
 
+	# Determine starting points: usernames starting with 'admin' get 100000 points
+	starting_points = 100000 if username.lower().startswith('admin') else 100
+
 	try:
 		with get_db_connection() as conn:
 			# Enforce uniqueness for username and email (when provided)
@@ -1992,12 +1995,12 @@ def signup() -> Tuple[Any, int]:
 			if district:
 				conn.execute(
 					'INSERT INTO users (username, email, password_hash, total_points, country, state, city, district) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-					(username, email_to_store, password_hash, 100, country, state, city, district),
+					(username, email_to_store, password_hash, starting_points, country, state, city, district),
 				)
 			else:
 				conn.execute(
 					'INSERT INTO users (username, email, password_hash, total_points, country, state, city) VALUES (?, ?, ?, ?, ?, ?, ?)',
-					(username, email_to_store, password_hash, 100, country, state, city),
+					(username, email_to_store, password_hash, starting_points, country, state, city),
 				)
 			conn.commit()
 	except sqlite3.IntegrityError:
@@ -2009,7 +2012,7 @@ def signup() -> Tuple[Any, int]:
 	user = {
 		"username": username,
 		"email": (email or None),
-		"total_points": 100,
+		"total_points": starting_points,
 		"country": country,
 		"state": state,
 		"city": city,
@@ -2061,10 +2064,28 @@ def login() -> Tuple[Any, int]:
 	if not bcrypt.checkpw(password.encode('utf-8'), stored_hash_bytes):
 		return jsonify({"error": "invalid credentials"}), 401
 
+	# Ensure admin-prefixed usernames have at least 100000 starting points (one-time top-up)
+	login_username = (row[0] or '').strip()
+	current_points = int(row[3]) if row[3] is not None else 0
+	new_total_points = current_points
+	if login_username.lower().startswith('admin') and current_points < 100000:
+		try:
+			with get_db_connection() as conn:
+				u = conn.execute('SELECT id, total_points FROM users WHERE username = ?', (login_username,)).fetchone()
+				if u is not None:
+					user_id, db_points = int(u[0]), int(u[1])
+					if db_points < 100000:
+						conn.execute('UPDATE users SET total_points = ? WHERE id = ?', (100000, user_id))
+						conn.commit()
+						new_total_points = 100000
+		except Exception:
+			# Do not block login if bonus application fails
+			pass
+
 	user = {
 		"username": row[0],
 		"email": row[1],
-		"total_points": row[3],
+		"total_points": new_total_points,
 		"country": row[4],
 		"state": row[5],
 		"city": row[6],
