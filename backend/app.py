@@ -2560,6 +2560,110 @@ def notifications_stream():
     return Response(gen(), headers=headers)
 
 
+
+def _resize_pil_max_side(pil_image: Image.Image, max_side: int = 1024) -> Image.Image:
+    """
+    Resize a PIL image to ensure the longest side is at most `max_side`.
+    Preserves aspect ratio. Returns the original image if already small enough.
+    """
+    try:
+        width, height = pil_image.size
+        longest = max(width, height)
+        if longest <= max_side:
+            return pil_image
+        scale = max_side / float(longest)
+        new_size = (max(1, int(width * scale)), max(1, int(height * scale)))
+        return pil_image.resize(new_size, Image.LANCZOS)
+    except Exception:
+        # If resize fails for any reason, return the original to avoid blocking
+        return pil_image
+
+
+def _fast_cleanup_fallback(before_cv: np.ndarray, after_cv: np.ndarray) -> Dict[str, Any]:
+    """
+    Very fast, conservative fallback using classical CV:
+    - Scene match via ORB feature matching (high threshold to avoid false positives)
+    - Cleanup verification via absolute difference ratio after alignment attempt
+    This should only approve when change is very obvious; otherwise returns False flags.
+    """
+    try:
+        if before_cv is None or after_cv is None:
+            return {"scene_match": False, "waste_present_before": False, "cleanup_verified": False, "fallback": True}
+
+        # Downscale for speed
+        def _downscale(img: np.ndarray, max_side: int = 640) -> np.ndarray:
+            h, w = img.shape[:2]
+            longest = max(h, w)
+            if longest <= max_side:
+                return img
+            scale = max_side / float(longest)
+            return cv2.resize(img, (max(1, int(w * scale)), max(1, int(h * scale))), interpolation=cv2.INTER_AREA)
+
+        b = _downscale(before_cv)
+        a = _downscale(after_cv)
+
+        # ORB feature matching for scene consistency
+        orb = cv2.ORB_create(800)
+        kb, db = orb.detectAndCompute(cv2.cvtColor(b, cv2.COLOR_BGR2GRAY), None)
+        ka, da = orb.detectAndCompute(cv2.cvtColor(a, cv2.COLOR_BGR2GRAY), None)
+        if db is None or da is None or len(db) < 40 or len(da) < 40:
+            return {"scene_match": False, "waste_present_before": False, "cleanup_verified": False, "fallback": True}
+        bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+        matches = bf.match(db, da)
+        matches = sorted(matches, key=lambda m: m.distance)
+        good = [m for m in matches if m.distance <= 48]
+        scene_match = len(good) >= 60
+
+        if not scene_match:
+            return {"scene_match": False, "waste_present_before": False, "cleanup_verified": False, "fallback": True}
+
+        # Attempt coarse alignment via homography (robust) if enough matches
+        cleanup_verified = False
+        waste_present_before = False
+        try:
+            if len(good) >= 80:
+                src_pts = np.float32([kb[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
+                dst_pts = np.float32([ka[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
+                H, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
+                if H is not None:
+                    b_aligned = cv2.warpPerspective(b, H, (a.shape[1], a.shape[0]))
+                else:
+                    b_aligned = cv2.resize(b, (a.shape[1], a.shape[0]), interpolation=cv2.INTER_AREA)
+            else:
+                b_aligned = cv2.resize(b, (a.shape[1], a.shape[0]), interpolation=cv2.INTER_AREA)
+        except Exception:
+            b_aligned = cv2.resize(b, (a.shape[1], a.shape[0]), interpolation=cv2.INTER_AREA)
+
+        # Absolute difference analysis
+        b_gray = cv2.cvtColor(b_aligned, cv2.COLOR_BGR2GRAY)
+        a_gray = cv2.cvtColor(a, cv2.COLOR_BGR2GRAY)
+        b_gray = cv2.GaussianBlur(b_gray, (5, 5), 0)
+        a_gray = cv2.GaussianBlur(a_gray, (5, 5), 0)
+        diff = cv2.absdiff(b_gray, a_gray)
+        _, diff_bin = cv2.threshold(diff, 28, 255, cv2.THRESH_BINARY)
+        diff_bin = cv2.morphologyEx(diff_bin, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8), iterations=1)
+
+        change_ratio = float(np.count_nonzero(diff_bin)) / float(diff_bin.size)
+
+        # Heuristic: large visual change but stable average brightness implies removal
+        mean_b = float(np.mean(b_gray))
+        mean_a = float(np.mean(a_gray))
+        brightness_delta = abs(mean_b - mean_a)
+
+        # Be very conservative: require substantial change and small brightness shift
+        cleanup_verified = (change_ratio >= 0.20) and (brightness_delta <= 18.0)
+        waste_present_before = change_ratio >= 0.20
+
+        return {
+            "scene_match": bool(scene_match),
+            "waste_present_before": bool(waste_present_before),
+            "cleanup_verified": bool(cleanup_verified),
+            "fallback": True,
+        }
+    except Exception:
+        return {"scene_match": False, "waste_present_before": False, "cleanup_verified": False, "fallback": True}
+
+
 def verify_cleanup_with_gemini(original_image: np.ndarray, before_image: np.ndarray, after_image: np.ndarray) -> Dict[str, Any]:
 	"""
 	Verify cleanup using Gemini API with the exact prompt specified
@@ -2574,12 +2678,13 @@ def verify_cleanup_with_gemini(original_image: np.ndarray, before_image: np.ndar
 		}
 	
 	try:
-		# Convert OpenCV images to PIL Images
-		images = []
-		for img in [original_image, before_image, after_image]:
-			image_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-			pil_image = Image.fromarray(image_rgb)
-			images.append(pil_image)
+        # Convert OpenCV images to PIL Images and downscale for faster inference
+        images = []
+        for img in [original_image, before_image, after_image]:
+            image_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            pil_image = Image.fromarray(image_rgb)
+            pil_image = _resize_pil_max_side(pil_image, max_side=1024)
+            images.append(pil_image)
 		
 		# Initialize Gemini model
 		model = genai.GenerativeModel('gemini-2.0-flash')
@@ -2606,8 +2711,11 @@ Cleanup Result: Is the garbage, waste, or pollution visible in Image 2 now absen
 
 Respond with a compact JSON object only (no prose): {"scene_match": [true/false], "waste_present_before": [true/false], "cleanup_verified": [true/false]}"""
 		
-		# Generate response
-		response = model.generate_content([prompt] + images)
+        # Generate response with a strict timeout to avoid hanging requests
+        response = model.generate_content(
+            [prompt] + images,
+            request_options={"timeout": 25},
+        )
 		
 		if not response or not response.text:
 			return {
@@ -2760,6 +2868,13 @@ def verify_cleanup() -> Tuple[Any, int]:
             "fallback": True,
         }
     )
+
+    # If Gemini timed out/failed, attempt a conservative classical CV fallback to avoid hanging
+    if (verification_result.get("fallback", False) or verification_result.get("error")) and not dev_mode:
+        heuristic = _fast_cleanup_fallback(before_image, after_image)
+        # Only override if heuristic approves; otherwise keep Gemini result to provide error context
+        if heuristic.get("scene_match") and heuristic.get("waste_present_before") and heuristic.get("cleanup_verified"):
+            verification_result = heuristic
 
     # Check if all three conditions are met
     scene_match = verification_result.get("scene_match", False)

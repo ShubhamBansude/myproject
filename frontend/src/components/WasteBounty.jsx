@@ -95,6 +95,47 @@ const WasteBounty = ({ updatePoints, currentUser }) => {
 
     const getCurrentLocation = () => Promise.resolve(null);
 
+    // Utilities: image compression and fetch timeout
+    const dataUrlToFile = (dataUrl, filename) => {
+        const arr = dataUrl.split(',');
+        const mime = arr[0].match(/:(.*?);/)[1] || 'image/jpeg';
+        const bstr = atob(arr[1]);
+        let n = bstr.length;
+        const u8arr = new Uint8Array(n);
+        while (n--) u8arr[n] = bstr.charCodeAt(n);
+        return new File([u8arr], filename, { type: mime });
+    };
+
+    const compressImageFile = async (file, { maxSide = 1600, quality = 0.82 } = {}) => {
+        try {
+            if (!file || !file.type?.startsWith('image/')) return file;
+            const imageBitmap = await createImageBitmap(file);
+            const { width, height } = imageBitmap;
+            const longest = Math.max(width, height);
+            const scale = longest > maxSide ? maxSide / longest : 1;
+            const targetW = Math.max(1, Math.round(width * scale));
+            const targetH = Math.max(1, Math.round(height * scale));
+            const canvas = document.createElement('canvas');
+            canvas.width = targetW;
+            canvas.height = targetH;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(imageBitmap, 0, 0, targetW, targetH);
+            const outputType = 'image/jpeg';
+            const dataUrl = canvas.toDataURL(outputType, quality);
+            const baseName = (file.name || 'photo').replace(/\.[^.]+$/, '');
+            return dataUrlToFile(dataUrl, `${baseName}_compressed.jpg`);
+        } catch {
+            return file; // fallback to original on any error
+        }
+    };
+
+    const fetchWithTimeout = (input, { timeoutMs = 35000, ...options } = {}) => {
+        const controller = new AbortController();
+        const id = setTimeout(() => controller.abort(), timeoutMs);
+        return fetch(input, { ...options, signal: controller.signal })
+            .finally(() => clearTimeout(id));
+    };
+
     const validateGeotag = async (file) => ({ hasGPS: true, file });
 
     const handleReportPhotoChange = async (event) => {
@@ -205,8 +246,10 @@ const WasteBounty = ({ updatePoints, currentUser }) => {
                 return;
             }
 
+            // Compress photo client-side for faster upload
+            const compressed = await compressImageFile(reportPhoto, { maxSide: 1600, quality: 0.82 });
             const formData = new FormData();
-            formData.append('bounty_report_photo', reportPhoto);
+            formData.append('bounty_report_photo', compressed, compressed.name || 'report.jpg');
             
             // Add location data for gallery photos
             if (reportLocation) {
@@ -223,10 +266,11 @@ const WasteBounty = ({ updatePoints, currentUser }) => {
 
             console.log('Submitting bounty with photo:', reportPhoto.name, 'Size:', reportPhoto.size);
 
-            const res = await fetch(apiUrl('/api/create_bounty'), {
+            const res = await fetchWithTimeout(apiUrl('/api/create_bounty'), {
                 method: 'POST',
                 headers: { 'Authorization': `Bearer ${token}` },
-                body: formData
+                body: formData,
+                timeoutMs: 35000,
             });
 
             console.log('Response status:', res.status);
@@ -245,7 +289,11 @@ const WasteBounty = ({ updatePoints, currentUser }) => {
             setReportPhotoSource('camera'); // Reset to camera
         } catch (e) {
             console.error('Bounty creation error:', e);
-            setError('Network error. Please try again.');
+            if (e?.name === 'AbortError') {
+                setError('Request timed out. Please try again.');
+            } else {
+                setError('Network error. Please try again.');
+            }
         } finally {
             setLoading(false);
         }
@@ -353,8 +401,13 @@ const WasteBounty = ({ updatePoints, currentUser }) => {
             const token = localStorage.getItem('authToken');
             const formData = new FormData();
             formData.append('bounty_id', selectedBounty.id);
-            formData.append('before_cleanup_photo', beforePhoto);
-            formData.append('after_cleanup_photo', afterPhoto);
+            // Compress both images for faster upload and server processing
+            const [beforeCompressed, afterCompressed] = await Promise.all([
+                compressImageFile(beforePhoto, { maxSide: 1400, quality: 0.82 }),
+                compressImageFile(afterPhoto, { maxSide: 1400, quality: 0.82 }),
+            ]);
+            formData.append('before_cleanup_photo', beforeCompressed, beforeCompressed.name || 'before.jpg');
+            formData.append('after_cleanup_photo', afterCompressed, afterCompressed.name || 'after.jpg');
             if (beforeLocation) {
                 formData.append('before_latitude', String(beforeLocation.latitude));
                 formData.append('before_longitude', String(beforeLocation.longitude));
@@ -364,10 +417,11 @@ const WasteBounty = ({ updatePoints, currentUser }) => {
                 formData.append('after_longitude', String(afterLocation.longitude));
             }
 
-            const res = await fetch(apiUrl('/api/verify_cleanup'), {
+            const res = await fetchWithTimeout(apiUrl('/api/verify_cleanup'), {
                 method: 'POST',
                 headers: { 'Authorization': `Bearer ${token}` },
-                body: formData
+                body: formData,
+                timeoutMs: 40000,
             });
 
             const data = await res.json();
@@ -395,8 +449,12 @@ const WasteBounty = ({ updatePoints, currentUser }) => {
             _setCleanupStep('before');
             setActiveTab('bounties');
             loadBounties(); // Refresh bounties list
-        } catch {
-            setError('Network error. Please try again.');
+        } catch (e) {
+            if (e?.name === 'AbortError') {
+                setError('Verification timed out. Please try again.');
+            } else {
+                setError('Network error. Please try again.');
+            }
         } finally {
             setLoading(false);
         }
