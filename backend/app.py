@@ -1515,27 +1515,58 @@ def notify_user(recipient_username: str, payload: Dict[str, Any]) -> None:
 
 
 # ======== Clean-buddy Bot ========
-def _generate_clean_buddy_reply(prompt_text: str, user_city: Optional[str] = None) -> str:
-    """Generate a concise AI answer to any user question.
-    Prefers Gemini if available; otherwise returns a simple echo with a tip.
+def _generate_clean_buddy_reply(
+    prompt_text: str,
+    user_city: Optional[str] = None,
+    user_id: Optional[int] = None,
+    latest_user_message_id: Optional[int] = None,
+) -> str:
+    """Generate a Gemini-powered answer using conversation history where available.
+
+    If Gemini is configured, we start a chat session with prior messages from
+    the user's Clean-buddy thread and send the latest prompt. If Gemini isn't
+    available, return a lightweight fallback response.
     """
     safe_prompt = (prompt_text or '').strip()
+
     if GEMINI_AVAILABLE and genai is not None:
         try:
-            model = genai.GenerativeModel('gemini-1.5-flash')
-            # Minimal steering only: be helpful and concise, include city if relevant
-            system = (
-                "You are Clean-buddy, a helpful, concise assistant. "
-                "Answer the user's question helpfully in under 120 words. "
-                "If city context is relevant, consider it."
-            )
-            prompt = f"{system}\n\nCity: {user_city or 'Unknown'}\nUser: {safe_prompt}\nAssistant:"
-            out = model.generate_content(prompt)
-            text = (out.text or '').strip()
+            model = genai.GenerativeModel('gemini-2.0-flash')
+
+            chat_history = []
+            if user_id is not None:
+                try:
+                    with get_db_connection() as conn:
+                        if latest_user_message_id is not None:
+                            rows = conn.execute(
+                                'SELECT role, message FROM clean_buddy_messages '\
+                                'WHERE user_id = ? AND id < ? ORDER BY id ASC LIMIT 40',
+                                (int(user_id), int(latest_user_message_id))
+                            ).fetchall()
+                        else:
+                            rows = conn.execute(
+                                'SELECT role, message FROM clean_buddy_messages '\
+                                'WHERE user_id = ? ORDER BY id ASC LIMIT 40',
+                                (int(user_id),)
+                            ).fetchall()
+                        for role, message in rows:
+                            mapped_role = 'user' if role == 'user' else 'model'
+                            if message is None:
+                                continue
+                            chat_history.append({"role": mapped_role, "parts": [str(message)]})
+                except Exception:
+                    chat_history = []
+
+            chat = model.start_chat(history=chat_history)
+
+            # Send the user's message as-is to preserve native Gemini style
+            out = chat.send_message(safe_prompt)
+            text = (getattr(out, 'text', '') or '').strip()
             if text:
                 return text
         except Exception:
             pass
+
     # Lightweight fallback when Gemini is unavailable or fails
     base = "I’m a lightweight assistant without AI right now."
     if safe_prompt:
@@ -1591,8 +1622,10 @@ def post_clean_buddy_message() -> Tuple[Any, int]:
             return jsonify({"error": "user not found"}), 404
         uid, city = int(u[0]), u[1]
         conn.execute('INSERT INTO clean_buddy_messages (user_id, role, message) VALUES (?, "user", ?)', (uid, text))
-        # Generate reply
-        reply = _generate_clean_buddy_reply(text, city)
+        # Capture inserted user message id for accurate chat history
+        user_msg_id = conn.execute('SELECT last_insert_rowid()').fetchone()[0]
+        # Generate reply (Gemini with conversation history when available)
+        reply = _generate_clean_buddy_reply(text, city, user_id=uid, latest_user_message_id=int(user_msg_id))
         conn.execute('INSERT INTO clean_buddy_messages (user_id, role, message) VALUES (?, "bot", ?)', (uid, reply))
         msg_id = conn.execute('SELECT last_insert_rowid()').fetchone()[0]
         conn.commit()
