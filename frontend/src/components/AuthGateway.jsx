@@ -1,7 +1,6 @@
 // src/components/AuthGateway.jsx
 
-import React, { useMemo, useState } from 'react';
-import { Country, State, City } from 'country-state-city';
+import React, { useMemo, useState, useEffect } from 'react';
 import { apiUrl } from '../lib/api';
 
 const Login = ({ onLoginSuccess, onForgot }) => {
@@ -227,9 +226,19 @@ const Signup = ({ onSignupSuccess }) => {
     const [showConfirmPassword, setShowConfirmPassword] = useState(false);
     const [error, setError] = useState(null);
 
-    // Dynamic suggestions from country-state-city
-    const allCountries = useMemo(() => Country.getAllCountries(), []);
-    const countryNames = useMemo(() => allCountries.map(c => c.name), [allCountries]);
+    // Lazy-load country-state-city only when Signup is rendered
+    const [csc, setCsc] = useState(null);
+    useEffect(() => {
+        let alive = true;
+        import('country-state-city')
+            .then((mod) => { if (alive) setCsc(mod); })
+            .catch(() => { /* ignore load errors, suggestions will be empty */ });
+        return () => { alive = false; };
+    }, []);
+
+    // Dynamic suggestions from country-state-city (loaded lazily)
+    const allCountries = useMemo(() => (csc ? csc.Country.getAllCountries() : []), [csc]);
+    const countryNames = useMemo(() => allCountries.map((c) => c.name), [allCountries]);
     const countryByName = useMemo(() => {
         const map = Object.create(null);
         for (const c of allCountries) map[c.name] = c;
@@ -237,9 +246,9 @@ const Signup = ({ onSignupSuccess }) => {
     }, [allCountries]);
 
     const statesForCountry = useMemo(() => {
-        if (!selectedCountry) return [];
-        return State.getStatesOfCountry(selectedCountry.isoCode);
-    }, [selectedCountry]);
+        if (!selectedCountry || !csc) return [];
+        return csc.State.getStatesOfCountry(selectedCountry.isoCode);
+    }, [selectedCountry, csc]);
     const stateNames = useMemo(() => statesForCountry.map(s => s.name), [statesForCountry]);
     const stateByName = useMemo(() => {
         const map = Object.create(null);
@@ -248,9 +257,9 @@ const Signup = ({ onSignupSuccess }) => {
     }, [statesForCountry]);
 
     const citiesForState = useMemo(() => {
-        if (!selectedCountry || !selectedStateObj) return [];
-        return City.getCitiesOfState(selectedCountry.isoCode, selectedStateObj.isoCode);
-    }, [selectedCountry, selectedStateObj]);
+        if (!selectedCountry || !selectedStateObj || !csc) return [];
+        return csc.City.getCitiesOfState(selectedCountry.isoCode, selectedStateObj.isoCode);
+    }, [selectedCountry, selectedStateObj, csc]);
     const cityNames = useMemo(() => citiesForState.map(c => c.name), [citiesForState]);
 
     const handleSubmit = async (e) => {

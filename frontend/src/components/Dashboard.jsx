@@ -658,9 +658,7 @@ const Dashboard = ({ currentUser, onLogout, setCurrentUser }) => {
     main = <ProfileView user={currentUser} setCurrentUser={setCurrentUser} lifetimePoints={stats.lifetime_points} />;
   }
 
-  const progressA = 75;
-  const progressB = 50;
-  // const circlePct = 60;
+  // removed unused progress constants
 
   return (
     <div className="relative min-h-screen font-sans bg-black">

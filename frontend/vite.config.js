@@ -4,7 +4,7 @@ import tailwindcss from '@tailwindcss/vite'
 import brotli from 'rollup-plugin-brotli'
 
 // https://vite.dev/config/
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
   plugins: [react(), tailwindcss(), brotli()],
   build: {
     cssCodeSplit: true,
@@ -25,13 +25,17 @@ export default defineConfig({
     minify: 'esbuild',
   },
   resolve: {
-    alias: process.env.USE_PREACT === '1' ? {
-      react: 'preact/compat',
-      'react-dom/test-utils': 'preact/test-utils',
-      'react-dom': 'preact/compat',
-    } : undefined,
+    // Use Preact in production automatically (or when USE_PREACT=1)
+    alias: (mode === 'production' || process.env.USE_PREACT === '1')
+      ? {
+          react: 'preact/compat',
+          'react-dom/test-utils': 'preact/test-utils',
+          'react-dom': 'preact/compat',
+        }
+      : undefined,
   },
   esbuild: {
-    drop: ['console', 'debugger'],
+    // Drop debug code in production, keep in dev for DX
+    drop: mode === 'production' ? ['console', 'debugger'] : [],
   },
-})
+}))
