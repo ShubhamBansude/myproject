@@ -237,6 +237,15 @@ const FriendsPanel = () => {
       }
     } catch {/* noop */}
   };
+
+  // Allow deep-linking to DM via global event from notifications
+  useEffect(() => {
+    const handler = (e) => {
+      const u = e?.detail?.username; if (u) loadDm(u);
+    };
+    window.addEventListener('openDmWith', handler);
+    return () => window.removeEventListener('openDmWith', handler);
+  }, []);
   return (
     <div className="grid gap-4 md:grid-cols-[1.1fr_1.2fr]">
       <div className="rounded-xl bg-white/5 border border-white/10 p-4">
@@ -309,7 +318,7 @@ const FriendsPanel = () => {
               {messages.length===0 && !loading && <div className="text-xs text-gray-400">No messages yet.</div>}
             </div>
             <div className="mt-2 flex items-center gap-2">
-              <input type="text" value={text} onChange={(e)=>setText(e.target.value)} placeholder="Type a message…" className="flex-1 px-3 py-2 rounded bg-black/40 border border-white/10 text-gray-100" />
+              <input type="text" value={text} onChange={(e)=>setText(e.target.value)} placeholder="Type a message…" className="flex-1 px-3 py-2 rounded bg-black/40 border border-white/10 text-gray-100" onKeyDown={(e)=>{ if(e.key==='Enter'){ e.preventDefault(); sendDm(); } }} />
               <button onClick={sendDm} disabled={!text.trim()||loading} className={`px-3 py-2 rounded text-sm font-semibold ${(!text.trim()||loading)?'bg-gray-500/40 text-gray-300':'bg-eco-green text-eco-dark'}`}>Send</button>
             </div>
           </div>
@@ -332,7 +341,7 @@ const FriendsPanel = () => {
               {botMsgs.length===0 && <div className="text-xs text-gray-400">No messages yet.</div>}
             </div>
             <div className="mt-2 flex items-center gap-2">
-              <input type="text" value={botText} onChange={(e)=>setBotText(e.target.value)} placeholder="Ask anything…" className="flex-1 px-3 py-2 rounded bg-black/40 border border-white/10 text-gray-100" />
+              <input type="text" value={botText} onChange={(e)=>setBotText(e.target.value)} placeholder="Ask anything…" className="flex-1 px-3 py-2 rounded bg-black/40 border border-white/10 text-gray-100" onKeyDown={(e)=>{ if(e.key==='Enter'){ e.preventDefault(); sendBot(); } }} />
               <button onClick={sendBot} disabled={!botText.trim()} className={`px-3 py-2 rounded text-sm font-semibold ${(!botText.trim())?'bg-gray-500/40 text-gray-300':'bg-eco-green text-eco-dark'}`}>Send</button>
             </div>
           </div>
@@ -552,7 +561,22 @@ const Dashboard = ({ currentUser, onLogout, setCurrentUser }) => {
         });
         const data = await res.json();
         if (res.ok) {
-          const list = Array.isArray(data.notifications) ? data.notifications : [];
+          let list = Array.isArray(data.notifications) ? data.notifications : [];
+          // Filter out Clean-buddy chat notifications by type or text
+          list = list.filter((n)=> {
+            const t = String(n.type||'');
+            const title = String(n.title||'');
+            const msg = String(n.message||'');
+            const isCleanBuddyType = /CLEAN_BUDDY_CHAT|CLEANBUDDY|CLEAN_BUDDY/i.test(t);
+            const mentionsCleanBuddy = /clean[-_\s]?buddy/i.test(title) || /clean[-_\s]?buddy/i.test(msg);
+            return !isCleanBuddyType && !mentionsCleanBuddy;
+          });
+          // Inject eco tips notifications (non-intrusive) at top once per session
+          const tips = [
+            { id: `tip_${Date.now()}_1`, type: 'TIP', title: 'Eco Tip', message: 'Separate wet and dry waste daily to improve recycling.', created_at: new Date().toISOString().slice(0,19).replace('T',' '), read_at: null },
+            { id: `tip_${Date.now()}_2`, type: 'TIP', title: 'Recycling Tip', message: 'Rinse bottles before recycling to avoid contamination.', created_at: new Date().toISOString().slice(0,19).replace('T',' '), read_at: null },
+          ];
+          list = [...tips, ...list];
           setNotifications(list);
           setUnreadCount(list.filter((n) => !n.read_at).length);
         }
@@ -573,6 +597,12 @@ const Dashboard = ({ currentUser, onLogout, setCurrentUser }) => {
       es.onmessage = (evt) => {
         try {
           const payload = JSON.parse(evt.data);
+          // Ignore Clean-buddy chat message events
+          const t = String(payload.type || '');
+          const title = String(payload.title||'');
+          const msg = String(payload.message||'');
+          if (/CLEAN_BUDDY_CHAT|CLEANBUDDY|CLEAN_BUDDY/i.test(t)) return;
+          if (/clean[-_\s]?buddy/i.test(title) || /clean[-_\s]?buddy/i.test(msg)) return;
           const notif = {
             id: payload.id || `temp_${Date.now()}`,
             type: payload.type,
@@ -714,11 +744,27 @@ const Dashboard = ({ currentUser, onLogout, setCurrentUser }) => {
                               const t = (n.type||'');
                               if (t === 'FRIEND_REQUEST' || t === 'FRIEND_ACCEPTED') {
                                 setActiveTab('friends');
+                                if (n?.payload?.from_username) {
+                                  // open DM thread directly
+                                  window.dispatchEvent(new CustomEvent('openDmWith', { detail: { username: n.payload.from_username } }));
+                                }
                               } else if (t === 'CLAN_JOIN_REQUEST' || t === 'CLAN_JOIN_DECISION') {
                                 setActiveTab('clans');
                               } else if (t === 'BOUNTY_CREATED' || t === 'CLAN_BOUNTY_REQUEST' || t === 'CLAN_BOUNTY_DECISION') {
                                 setActiveTab('bounty');
                                 if (n.context_bounty_id) setBountyToOpen(n.context_bounty_id);
+                              } else if (t === 'FRIEND_DM') {
+                                setActiveTab('friends');
+                                if (n?.payload?.from_username) {
+                                  window.dispatchEvent(new CustomEvent('openDmWith', { detail: { username: n.payload.from_username } }));
+                                }
+                              } else if (/CLAN/i.test(t) && /(MESSAGE|CHAT)/i.test(t)) {
+                                setActiveTab('clans');
+                              } else if (/FRIEND/i.test(t) && /(MESSAGE|DM|CHAT)/i.test(t)) {
+                                setActiveTab('friends');
+                                if (n?.payload?.from_username) {
+                                  window.dispatchEvent(new CustomEvent('openDmWith', { detail: { username: n.payload.from_username } }));
+                                }
                               }
                               setNotifOpen(false);
                             }} className="cursor-pointer">

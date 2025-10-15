@@ -976,6 +976,7 @@ const WasteBounty = ({ updatePoints, currentUser, bountyToOpen }) => {
                                                     onChange={(e) => setChatInputByBounty((prev) => ({ ...prev, [bounty.id]: e.target.value }))}
                                                     placeholder="Type a message…"
                                                     className="flex-1 px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white placeholder-gray-400 text-sm"
+                                                    onKeyDown={(e)=>{ if(e.key==='Enter'){ e.preventDefault(); sendChatMessage(bounty.id); } }}
                                                 />
                                                 <button
                                                     onClick={() => sendChatMessage(bounty.id)}

@@ -27,16 +27,20 @@ const Avatar = ({ label }) => {
 };
 
 const LeaderList = ({ title, items, type }) => {
+  // Exclude admin-like usernames from users leaderboard display
+  const displayItems = type === 'users'
+    ? (items || []).filter((item) => !/admin/i.test(String(item?.username || '')))
+    : (items || []);
   return (
     <div className="rounded-xl bg-white/5 border border-white/10 p-4">
       <div className="flex items-center justify-between mb-2">
         <div className="text-gray-200 font-semibold">{title}</div>
       </div>
       <ol className="divide-y divide-white/10">
-        {items.length === 0 && (
+        {displayItems.length === 0 && (
           <li className="py-3 text-xs text-gray-400">No data available.</li>
         )}
-        {items.map((item, idx) => (
+        {displayItems.map((item, idx) => (
           <li key={(item.username || item.id || idx) + String(idx)} className="py-3 flex items-center gap-3">
             <RankBadge rank={idx + 1} />
             <Avatar label={type === 'users' ? item.username : item.name} />
