@@ -34,6 +34,28 @@ const RewardsShop = ({ onRedeem }) => {
     if (token) load();
   }, [token]);
 
+  const syncGrabOn = async () => {
+    setError(''); setLoading(true);
+    try {
+      const res = await fetch(apiUrl('/api/sync_grabon'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ limit: 6 }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || 'Failed to sync coupons');
+      // Reload coupons after sync
+      const r = await fetch(apiUrl('/api/coupons'), { headers: { Authorization: `Bearer ${token}` } });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d?.error || 'Failed to load coupons');
+      setCoupons(d.coupons || []);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   // On mount/load, check if user already has a certificate issued
   useEffect(() => {
     const loadMyCert = async () => {
@@ -60,6 +82,9 @@ const RewardsShop = ({ onRedeem }) => {
       if (!res.ok) throw new Error(data?.error || 'Redeem failed');
       onRedeem(data.total_points, true); // mark redeemed
       alert(`Redeemed! Code: ${data.coupon_code}`);
+      if (data.external_url) {
+        window.open(data.external_url, '_blank', 'noopener');
+      }
     } catch (e) {
       setError(e.message);
     }
@@ -88,6 +113,10 @@ const RewardsShop = ({ onRedeem }) => {
     <div>
       {loading && <div className="text-gray-300">Loading...</div>}
       {error && <div className="p-3 mb-3 text-sm text-red-300 bg-red-500/10 border border-red-500/20 rounded">{error}</div>}
+      <div className="flex items-center justify-between mb-3">
+        <div className="text-sm text-gray-300">Redeem eco-friendly coupons with your points.</div>
+        <button onClick={syncGrabOn} className="px-3 py-2 rounded-md bg-white/10 border border-white/20 text-gray-100 text-sm hover:bg-white/20">Fetch GrabOn Coupons</button>
+      </div>
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {/* Carbon Warrior Certificate card */}
         <div className="rounded-xl bg-white/5 border border-white/10 p-4 relative overflow-hidden">
@@ -149,6 +178,9 @@ const RewardsShop = ({ onRedeem }) => {
               <span className="px-3 py-1 rounded-full bg-eco-green/20 text-eco-green border border-eco-green/30 text-sm">{c.points_cost} pts</span>
               <button onClick={() => redeem(c.id)} className="px-3 py-2 rounded-lg bg-eco-green text-white text-sm hover:brightness-110">Redeem</button>
             </div>
+            {c.external_url && (
+              <a href={c.external_url} target="_blank" rel="noreferrer" className="inline-block mt-2 text-xs text-eco-accent hover:underline">View offer ↗</a>
+            )}
           </div>
         ))}
       </div>
