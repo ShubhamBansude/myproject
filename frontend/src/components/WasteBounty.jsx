@@ -3,8 +3,15 @@
 import React, { useState, useEffect } from 'react';
 import { apiUrl } from '../lib/api';
 
-// Location checks removed for claiming bounty; EXIF parsing bypassed
-const loadEXIF = async () => null;
+// Load EXIF reader on-demand
+const loadEXIF = async () => {
+    try {
+        const mod = await import('exif-js');
+        return mod?.default || mod; // some bundlers export default
+    } catch {
+        return null;
+    }
+};
 
 const WasteBounty = ({ updatePoints, currentUser, bountyToOpen }) => {
     const [activeTab, setActiveTab] = useState('report'); // 'report', 'bounties', 'cleanup'
@@ -138,7 +145,23 @@ const WasteBounty = ({ updatePoints, currentUser, bountyToOpen }) => {
         })();
     }, []);
 
-    const getCurrentLocation = () => Promise.resolve(null);
+    const getCurrentLocation = () => new Promise((resolve) => {
+        try {
+            if (!('geolocation' in navigator)) {
+                resolve(null);
+                return;
+            }
+            navigator.geolocation.getCurrentPosition(
+                (pos) => {
+                    resolve({ latitude: pos.coords.latitude, longitude: pos.coords.longitude });
+                },
+                () => resolve(null),
+                { enableHighAccuracy: true, timeout: 12000, maximumAge: 0 }
+            );
+        } catch {
+            resolve(null);
+        }
+    });
 
     // Utilities: image compression and fetch timeout
     const dataUrlToFile = (dataUrl, filename) => {
@@ -181,7 +204,58 @@ const WasteBounty = ({ updatePoints, currentUser, bountyToOpen }) => {
             .finally(() => clearTimeout(id));
     };
 
-    const validateGeotag = async (file) => ({ hasGPS: true, file });
+    const validateGeotag = async (file, source) => {
+        const exifLib = await loadEXIF();
+        const rationalToFloat = (r) => {
+            if (r == null) return NaN;
+            if (typeof r === 'number') return r;
+            if (Array.isArray(r) && r.length >= 2 && typeof r[0] === 'number') return r[0] / (r[1] || 1);
+            if (typeof r === 'object' && 'numerator' in r && 'denominator' in r) return (r.numerator || 0) / (r.denominator || 1);
+            return NaN;
+        };
+        const toDecimal = (coord, ref) => {
+            if (!Array.isArray(coord) || coord.length < 1) return null;
+            const d = rationalToFloat(coord[0]);
+            const m = rationalToFloat(coord[1] ?? 0);
+            const s = rationalToFloat(coord[2] ?? 0);
+            if (Number.isNaN(d)) return null;
+            let dec = d + (m / 60) + (s / 3600);
+            const refStr = typeof ref === 'string' ? ref.toUpperCase() : '';
+            if (refStr === 'S' || refStr === 'W') dec = -dec;
+            return dec;
+        };
+
+        let location = null;
+
+        // Try EXIF first (before compression strips metadata)
+        try {
+            if (exifLib && file?.arrayBuffer) {
+                const buf = await file.arrayBuffer();
+                const exif = exifLib.readFromBinaryFile(buf) || {};
+                const lat = toDecimal(exif.GPSLatitude, exif.GPSLatitudeRef);
+                const lon = toDecimal(exif.GPSLongitude, exif.GPSLongitudeRef);
+                if (typeof lat === 'number' && typeof lon === 'number' && !Number.isNaN(lat) && !Number.isNaN(lon)) {
+                    location = { latitude: lat, longitude: lon };
+                }
+            }
+        } catch {
+            // ignore EXIF errors and try geolocation
+        }
+
+        // If EXIF missing, try device geolocation (especially for gallery or stripped metadata)
+        if (!location) {
+            try {
+                const geo = await getCurrentLocation();
+                if (geo && typeof geo.latitude === 'number' && typeof geo.longitude === 'number') {
+                    location = geo;
+                }
+            } catch {
+                // ignore
+            }
+        }
+
+        return { hasGPS: !!location, location, file };
+    };
 
     const handleReportPhotoChange = async (event) => {
         const file = event.target.files[0];
@@ -193,9 +267,10 @@ const WasteBounty = ({ updatePoints, currentUser, bountyToOpen }) => {
             setReportPreview(URL.createObjectURL(result.file));
             setError(null);
             
-            if (!result.hasGPS) {
+            // Attach location from EXIF or geolocation if available
+            if (result.location) {
                 setReportLocation(result.location);
-                setSuccess('✅ Gallery photo selected! Current location has been added as GPS data.');
+                setSuccess('✅ Location attached to your photo.');
             } else {
                 setReportLocation(null);
             }
@@ -225,9 +300,8 @@ const WasteBounty = ({ updatePoints, currentUser, bountyToOpen }) => {
             setBeforePreview(URL.createObjectURL(result.file));
             setError(null);
             
-            if (!result.hasGPS) {
+            if (result.location) {
                 setBeforeLocation(result.location);
-                setSuccess('✅ Gallery photo selected! Current location has been added as GPS data.');
             }
         } catch (err) {
             setError(err?.message || 'Failed to process image. Try again.');
@@ -254,9 +328,8 @@ const WasteBounty = ({ updatePoints, currentUser, bountyToOpen }) => {
             setAfterPreview(URL.createObjectURL(result.file));
             setError(null);
             
-            if (!result.hasGPS) {
+            if (result.location) {
                 setAfterLocation(result.location);
-                setSuccess('✅ Gallery photo selected! Current location has been added as GPS data.');
             }
         } catch (err) {
             setError(err?.message || 'Failed to process image. Try again.');
@@ -665,7 +738,7 @@ const WasteBounty = ({ updatePoints, currentUser, bountyToOpen }) => {
                                     <p className="text-gray-300 font-medium">
                                         {reportPhotoSource === 'camera' ? 'Take Photo with Camera' : 'Choose from Gallery'}
                                     </p>
-                                    <p className="text-sm text-gray-400 mt-1">No GPS required</p>
+                                    <p className="text-sm text-gray-400 mt-1">Location will be attached automatically when possible</p>
                                     {reportPhoto && (
                                         <p className="text-sm text-eco-green mt-2 font-semibold">
                                             Photo selected: {reportPhoto.name}
