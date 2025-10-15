@@ -29,6 +29,9 @@ import tempfile
 import piexif
 from geopy.geocoders import Nominatim
 import math
+import requests
+import re
+import html as htmllib
 
 # Gemini AI integration
 try:
@@ -828,6 +831,14 @@ def init_db() -> None:
 		)
 		# Seed default coupons once
 		seed_coupons(conn)
+		# Add optional columns for external source-backed coupons
+		cursor = conn.execute('PRAGMA table_info(coupons)')
+		coupon_columns = [column[1] for column in cursor.fetchall()]
+		if 'external_url' not in coupon_columns:
+			conn.execute('ALTER TABLE coupons ADD COLUMN external_url TEXT')
+		if 'source' not in coupon_columns:
+			conn.execute('ALTER TABLE coupons ADD COLUMN source TEXT')
+		conn.commit()
 		# Transactions table
 		conn.execute(
 			(
@@ -1976,14 +1987,147 @@ def list_coupons() -> Tuple[Any, int]:
 	if not username:
 		return jsonify({"error": "unauthorized"}), 401
 	with get_db_connection() as conn:
-		rows = conn.execute('SELECT id, name, points_cost, coupon_code, description FROM coupons WHERE is_active = 1 ORDER BY points_cost ASC').fetchall()
+		rows = conn.execute('SELECT id, name, points_cost, coupon_code, description, external_url, source FROM coupons WHERE is_active = 1 ORDER BY points_cost ASC').fetchall()
 		coupons = [
-			{"id": r[0], "name": r[1], "points_cost": r[2], "coupon_code": r[3], "description": r[4]}
+			{
+				"id": r[0],
+				"name": r[1],
+				"points_cost": r[2],
+				"coupon_code": r[3],
+				"description": r[4],
+				"external_url": r[5],
+				"source": r[6],
+			}
 			for r in rows
 		]
 	return jsonify({"coupons": coupons}), 200
 
 
+@app.route('/api/sync_grabon', methods=['POST'])
+def sync_grabon() -> Tuple[Any, int]:
+    """
+    Fetch a random selection of coupons from GrabOn website (public listing pages),
+    extract title and destination URL, and insert them into our coupons table
+    with randomized points costs. This is a best-effort HTML scrape without guarantees.
+
+    Request body (optional): { "limit": number }
+    """
+    username = parse_username_from_auth()
+    if not username:
+        return jsonify({"error": "unauthorized"}), 401
+
+    data = request.get_json(silent=True) or {}
+    try:
+        limit = int(data.get('limit', 6))
+    except Exception:
+        limit = 6
+    limit = max(1, min(limit, 15))
+
+    # A few category pages to diversify coupons
+    category_pages = [
+        'https://www.grabon.in/food-coupons/',
+        'https://www.grabon.in/fashion-coupons/',
+        'https://www.grabon.in/electronics-coupons/',
+        'https://www.grabon.in/recharge-coupons/',
+    ]
+
+    collected: List[Dict[str, Any]] = []
+
+    def _fetch(url: str) -> str:
+        try:
+            r = requests.get(url, timeout=10, headers={
+                'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119 Safari/537.36'
+            })
+            if r.status_code == 200:
+                return r.text
+        except Exception:
+            pass
+        return ''
+
+    # Simple regex-based parsing to find deal cards and links
+    # Note: This is deliberately lenient and may pick popular coupons.
+    title_pattern = re.compile(r'''<a[^>]*class="[^"']*coupon-title[^"']*"[^>]*>(.*?)</a>''', re.IGNORECASE | re.DOTALL)
+    link_pattern = re.compile(r'''<a[^>]*href="(https?://[^"]+)"[^>]*class="[^"']*coupon-title[^"']*"''', re.IGNORECASE)
+    strip_tags = re.compile(r'<[^>]+>')
+
+    random.shuffle(category_pages)
+    for page in category_pages:
+        if len(collected) >= limit * 2:  # fetch extra to filter later
+            break
+        html = _fetch(page)
+        if not html:
+            continue
+        # Grab titles
+        titles = [htmllib.unescape(strip_tags.sub('', m.strip())) for m in title_pattern.findall(html)]
+        links = [m for m in link_pattern.findall(html)]
+        # Pair by index where possible
+        for i in range(min(len(titles), len(links))):
+            title = titles[i]
+            url = links[i]
+            if not title or not url:
+                continue
+            collected.append({"title": title[:120], "url": url})
+        # Fallback: if not matched, try generic anchors containing '/coupon/'
+        if not collected:
+            generic = re.findall(r'<a[^>]*href="(https?://[^"]+/coupon/[^"]+)"[^>]*>(.*?)</a>', html, re.IGNORECASE | re.DOTALL)
+            for href, t in generic:
+                title = htmllib.unescape(strip_tags.sub('', t)).strip()
+                if title:
+                    collected.append({"title": title[:120], "url": href})
+
+    if not collected:
+        return jsonify({"error": "Failed to fetch coupons from GrabOn."}), 502
+
+    # Randomize, de-duplicate by URL
+    random.shuffle(collected)
+    seen: Set[str] = set()
+    unique: List[Dict[str, Any]] = []
+    for item in collected:
+        if item['url'] in seen:
+            continue
+        seen.add(item['url'])
+        unique.append(item)
+        if len(unique) >= limit:
+            break
+
+    if not unique:
+        return jsonify({"error": "No new coupons found."}), 502
+
+    # Insert into DB with randomized point costs and generated codes
+    inserted: List[Dict[str, Any]] = []
+    with get_db_connection() as conn:
+        for item in unique:
+            name = item['title'] or 'Deal'
+            # Assign a reasonable points cost: 300-1200
+            points_cost = random.choice([300, 400, 500, 600, 750, 900, 1000, 1200])
+            # Generate a pseudo code stable per URL hash
+            code = ('GRAB' + hashlib.sha256(item['url'].encode('utf-8')).hexdigest()[:8]).upper()
+            description = 'GrabOn deal – visit to unlock/claim.'
+            try:
+                conn.execute(
+                    'INSERT OR IGNORE INTO coupons (name, points_cost, coupon_code, description, is_active, external_url, source) VALUES (?, ?, ?, ?, 1, ?, ?)',
+                    (name, points_cost, code, description, item['url'], 'GrabOn')
+                )
+                # Fetch the row id if inserted
+                row = conn.execute('SELECT id FROM coupons WHERE coupon_code = ?', (code,)).fetchone()
+                if row:
+                    inserted.append({
+                        "id": int(row[0]),
+                        "name": name,
+                        "points_cost": points_cost,
+                        "coupon_code": code,
+                        "external_url": item['url'],
+                        "source": 'GrabOn',
+                    })
+            except Exception:
+                # Ignore individual insert errors to allow others
+                continue
+        conn.commit()
+
+    if not inserted:
+        return jsonify({"error": "No coupons inserted."}), 500
+
+    return jsonify({"inserted": inserted, "count": len(inserted)}), 200
 @app.route('/api/redeem', methods=['POST'])
 def redeem_coupon() -> Tuple[Any, int]:
 	username = parse_username_from_auth()
@@ -1998,10 +2142,10 @@ def redeem_coupon() -> Tuple[Any, int]:
 		if user_row is None:
 			return jsonify({"error": "user not found"}), 404
 		user_id, total_points = int(user_row[0]), int(user_row[1])
-		c_row = conn.execute('SELECT id, name, points_cost, coupon_code FROM coupons WHERE id = ? AND is_active = 1', (coupon_id,)).fetchone()
+		c_row = conn.execute('SELECT id, name, points_cost, coupon_code, external_url FROM coupons WHERE id = ? AND is_active = 1', (coupon_id,)).fetchone()
 		if c_row is None:
 			return jsonify({"error": "coupon not found"}), 404
-		cid, cname, cost, code = int(c_row[0]), str(c_row[1]), int(c_row[2]), str(c_row[3])
+		cid, cname, cost, code, external_url = int(c_row[0]), str(c_row[1]), int(c_row[2]), str(c_row[3]), c_row[4]
 		if total_points < cost:
 			return jsonify({"error": "insufficient points"}), 400
 		new_total = total_points - cost
@@ -2009,7 +2153,7 @@ def redeem_coupon() -> Tuple[Any, int]:
 		conn.execute('INSERT INTO transactions (user_id, points_change, reason) VALUES (?, ?, ?)', (user_id, -cost, f"Redeemed: {cname}"))
 		conn.execute('UPDATE stats SET redemptions = redemptions + 1 WHERE id = 1')
 		conn.commit()
-	return jsonify({"message": "Coupon redeemed", "total_points": new_total, "coupon_code": code}), 200
+	return jsonify({"message": "Coupon redeemed", "total_points": new_total, "coupon_code": code, "external_url": external_url}), 200
 
 
 @app.route('/api/transactions', methods=['GET'])
@@ -2678,13 +2822,13 @@ def verify_cleanup_with_gemini(original_image: np.ndarray, before_image: np.ndar
 		}
 	
 	try:
-        # Convert OpenCV images to PIL Images and downscale for faster inference
-        images = []
-        for img in [original_image, before_image, after_image]:
-            image_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            pil_image = Image.fromarray(image_rgb)
-            pil_image = _resize_pil_max_side(pil_image, max_side=1024)
-            images.append(pil_image)
+		# Convert OpenCV images to PIL Images and downscale for faster inference
+		images = []
+		for img in [original_image, before_image, after_image]:
+			image_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+			pil_image = Image.fromarray(image_rgb)
+			pil_image = _resize_pil_max_side(pil_image, max_side=1024)
+			images.append(pil_image)
 		
 		# Initialize Gemini model
 		model = genai.GenerativeModel('gemini-2.0-flash')
@@ -2711,11 +2855,11 @@ Cleanup Result: Is the garbage, waste, or pollution visible in Image 2 now absen
 
 Respond with a compact JSON object only (no prose): {"scene_match": [true/false], "waste_present_before": [true/false], "cleanup_verified": [true/false]}"""
 		
-        # Generate response with a strict timeout to avoid hanging requests
-        response = model.generate_content(
-            [prompt] + images,
-            request_options={"timeout": 25},
-        )
+		# Generate response with a strict timeout to avoid hanging requests
+		response = model.generate_content(
+			[prompt] + images,
+			request_options={"timeout": 25},
+		)
 		
 		if not response or not response.text:
 			return {
