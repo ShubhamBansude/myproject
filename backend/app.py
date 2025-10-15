@@ -1371,6 +1371,34 @@ def generate_carbon_warrior_certificate(username: str, meta: Optional[Dict[str, 
     poppins_semibold = _load_ttf_font(os.path.join(assets_dir, 'Poppins-Bold.ttf'), 84) or ImageFont.load_default()
     poppins_regular = _load_ttf_font(os.path.join(assets_dir, 'Poppins-Regular.ttf'), 56) or ImageFont.load_default()
 
+    # Gold badge at left-center (define early so we can render behind text)
+    def draw_badge(center_x: int, center_y: int, radius: int = 180) -> None:
+        badge = Image.new('RGBA', (radius*2+8, radius*2+8), (0, 0, 0, 0))
+        bdraw = ImageDraw.Draw(badge)
+        # outer ring
+        bdraw.ellipse([4, 4, radius*2+4, radius*2+4], fill=(234, 179, 8, 255))
+        bdraw.ellipse([24, 24, radius*2-16, radius*2-16], fill=(251, 191, 36, 255))
+        bdraw.ellipse([56, 56, radius*2-48, radius*2-48], fill=(253, 224, 71, 255))
+        # inner circle with green
+        bdraw.ellipse([86, 86, radius*2-78, radius*2-78], fill=(5, 150, 105, 255))
+        # simple laurel marks
+        for i in range(12):
+            angle = i * (360/12)
+            rad = math.radians(angle)
+            px = radius + int((radius-36) * math.cos(rad))
+            py = radius + int((radius-36) * math.sin(rad))
+            bdraw.ellipse([px-6, py-6, px+6, py+6], fill=(255, 255, 255, 230))
+        # text
+        label_font = _load_ttf_font(os.path.join(assets_dir, 'Poppins-Bold.ttf'), 44) or ImageFont.load_default()
+        t1 = "CARBON"
+        t2 = "WARRIOR"
+        t1_bbox = bdraw.textbbox((0, 0), t1, font=label_font)
+        t2_bbox = bdraw.textbbox((0, 0), t2, font=label_font)
+        bdraw.text(((badge.width - (t1_bbox[2]-t1_bbox[0]))//2, radius-24), t1, fill=(240, 253, 250), font=label_font)
+        bdraw.text(((badge.width - (t2_bbox[2]-t2_bbox[0]))//2, radius+16), t2, fill=(240, 253, 250), font=label_font)
+        badge = badge.filter(ImageFilter.GaussianBlur(0.3))
+        background.paste(badge, (center_x - badge.width//2, center_y - badge.height//2), badge)
+
     # Optional logos row (kept if assets available); reserves minimal top space
     border_margin = 120
     logos_y = border_margin + 10
@@ -1392,6 +1420,11 @@ def generate_carbon_warrior_certificate(username: str, meta: Optional[Dict[str, 
         top_reserved_y = max(top_reserved_y, logos_y + sbm.height)
     except Exception:
         sbm = None
+
+    # Draw Carbon Warrior circular badge BEHIND text (render now, before text)
+    badge_center_x = border_margin + 260
+    badge_center_y = max(top_reserved_y + 200, border_margin + 260)
+    draw_badge(badge_center_x, badge_center_y)
 
     # Headings
     heading = "CERTIFICATE OF APPRECIATION"
@@ -1419,10 +1452,19 @@ def generate_carbon_warrior_certificate(username: str, meta: Optional[Dict[str, 
 
     # Recipient name (largest text on certificate)
     username_display = username.strip() or "Participant"
-    name_font = _load_ttf_font(os.path.join(assets_dir, 'Poppins-Bold.ttf'), 240) or poppins_semibold
+    base_name_pt = 240
+    name_font = _load_ttf_font(os.path.join(assets_dir, 'Poppins-Bold.ttf'), base_name_pt) or poppins_semibold
     name_bbox = draw.textbbox((0, 0), username_display, font=name_font)
     name_w = name_bbox[2] - name_bbox[0]
     name_h = name_bbox[3] - name_bbox[1]
+    max_name_width = int(width * 0.86)
+    if name_w > max_name_width:
+        scale = max_name_width / max(1, name_w)
+        adjusted_size = max(120, int(base_name_pt * scale))
+        name_font = _load_ttf_font(os.path.join(assets_dir, 'Poppins-Bold.ttf'), adjusted_size) or poppins_semibold
+        name_bbox = draw.textbbox((0, 0), username_display, font=name_font)
+        name_w = name_bbox[2] - name_bbox[0]
+        name_h = name_bbox[3] - name_bbox[1]
     name_x = (width - name_w) // 2
     name_y = title_y + title_h + 100
     # Clean, professional sans-serif in deep gray/near-black
@@ -1451,7 +1493,8 @@ def generate_carbon_warrior_certificate(username: str, meta: Optional[Dict[str, 
             lines.append(" ".join(current))
         return lines
 
-    para_y = name_y + 160
+    # Start paragraph AFTER the name's bottom to avoid overlap
+    para_y = name_y + name_h + 80
     max_text_width = int(width * 0.78)
     recog_lines = wrap_text_to_width(recog_text, poppins_regular, max_text_width)
     for i, line in enumerate(recog_lines):
@@ -1499,38 +1542,7 @@ def generate_carbon_warrior_certificate(username: str, meta: Optional[Dict[str, 
     program_y = height - border_margin - 210
     draw.text((program_x, program_y), program_label, fill=(51, 65, 85), font=poppins_regular)
 
-    # Gold badge at left-center
-    def draw_badge(center_x: int, center_y: int, radius: int = 180) -> None:
-        badge = Image.new('RGBA', (radius*2+8, radius*2+8), (0, 0, 0, 0))
-        bdraw = ImageDraw.Draw(badge)
-        # outer ring
-        bdraw.ellipse([4, 4, radius*2+4, radius*2+4], fill=(234, 179, 8, 255))
-        bdraw.ellipse([24, 24, radius*2-16, radius*2-16], fill=(251, 191, 36, 255))
-        bdraw.ellipse([56, 56, radius*2-48, radius*2-48], fill=(253, 224, 71, 255))
-        # inner circle with green
-        bdraw.ellipse([86, 86, radius*2-78, radius*2-78], fill=(5, 150, 105, 255))
-        # simple laurel marks
-        for i in range(12):
-            angle = i * (360/12)
-            rad = math.radians(angle)
-            px = radius + int((radius-36) * math.cos(rad))
-            py = radius + int((radius-36) * math.sin(rad))
-            bdraw.ellipse([px-6, py-6, px+6, py+6], fill=(255, 255, 255, 230))
-        # text
-        label_font = _load_ttf_font(os.path.join(assets_dir, 'Poppins-Bold.ttf'), 44) or ImageFont.load_default()
-        t1 = "CARBON"
-        t2 = "WARRIOR"
-        t1_bbox = bdraw.textbbox((0, 0), t1, font=label_font)
-        t2_bbox = bdraw.textbbox((0, 0), t2, font=label_font)
-        bdraw.text(((badge.width - (t1_bbox[2]-t1_bbox[0]))//2, radius-24), t1, fill=(240, 253, 250), font=label_font)
-        bdraw.text(((badge.width - (t2_bbox[2]-t2_bbox[0]))//2, radius+16), t2, fill=(240, 253, 250), font=label_font)
-        badge = badge.filter(ImageFilter.GaussianBlur(0.3))
-        background.paste(badge, (center_x - badge.width//2, center_y - badge.height//2), badge)
-
-    # Keep Carbon Warrior circular badge near top-left of the content area
-    badge_center_x = border_margin + 260
-    badge_center_y = max(top_reserved_y + 200, border_margin + 260)
-    draw_badge(badge_center_x, badge_center_y)
+    # (Badge already drawn behind text above)
 
     # Save to PDF
     safe_username = ''.join(ch for ch in username if ch.isalnum() or ch in ('-', '_')).strip() or 'user'
