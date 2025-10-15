@@ -36,8 +36,6 @@ const WasteBounty = ({ updatePoints, currentUser, bountyToOpen }) => {
     const [afterPhotoSource, setAfterPhotoSource] = useState('camera');
     const [beforeLocation, setBeforeLocation] = useState(null);
     const [afterLocation, setAfterLocation] = useState(null);
-    const [cleanupStep, _setCleanupStep] = useState('before'); // 'before', 'after', 'submit'
-    void cleanupStep; // referenced for lint satisfaction
 
     // Chat states (per-bounty)
     const [openChatBountyId, setOpenChatBountyId] = useState(null);
@@ -82,7 +80,6 @@ const WasteBounty = ({ updatePoints, currentUser, bountyToOpen }) => {
             if (b) {
                 setSelectedBounty(b);
                 setActiveTab('cleanup');
-                _setCleanupStep('before');
             } else {
                 setActiveTab('bounties');
                 setSuccess('Opening bounty… refresh to find it in your city list.');
@@ -391,10 +388,7 @@ const WasteBounty = ({ updatePoints, currentUser, bountyToOpen }) => {
                 if (reportLocation.state) {
                     formData.append('state', reportLocation.state);
                 }
-                console.log('Adding location data for gallery photo:', reportLocation);
             }
-
-            console.log('Submitting bounty with photo:', reportPhoto.name, 'Size:', reportPhoto.size);
 
             const res = await fetchWithTimeout(apiUrl('/api/create_bounty'), {
                 method: 'POST',
@@ -403,9 +397,8 @@ const WasteBounty = ({ updatePoints, currentUser, bountyToOpen }) => {
                 timeoutMs: 35000,
             });
 
-            console.log('Response status:', res.status);
             const data = await res.json();
-            console.log('Response data:', data);
+            
 
             if (!res.ok) {
                 setError(data?.error || 'Failed to create bounty');
@@ -418,7 +411,6 @@ const WasteBounty = ({ updatePoints, currentUser, bountyToOpen }) => {
             setReportLocation(null);
             setReportPhotoSource('camera'); // Reset to camera
         } catch (e) {
-            console.error('Bounty creation error:', e);
             if (e?.name === 'AbortError') {
                 setError('Request timed out. Please try again.');
             } else {
@@ -432,7 +424,6 @@ const WasteBounty = ({ updatePoints, currentUser, bountyToOpen }) => {
     const claimBounty = (bounty) => {
         setSelectedBounty(bounty);
         setActiveTab('cleanup');
-        _setCleanupStep('before');
     };
 
     const openParticipateWithClan = (bounty) => {
@@ -657,7 +648,6 @@ const WasteBounty = ({ updatePoints, currentUser, bountyToOpen }) => {
             setAfterPreview(null);
             setBeforeLocation(null);
             setAfterLocation(null);
-            _setCleanupStep('before');
             setActiveTab('bounties');
             loadBounties(); // Refresh bounties list
         } catch (e) {
