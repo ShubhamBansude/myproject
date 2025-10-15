@@ -498,6 +498,7 @@ const Dashboard = ({ currentUser, onLogout, setCurrentUser }) => {
   const [notifOpen, setNotifOpen] = useState(false);
   const eventSourceRef = useRef(null);
   const [peekUser, setPeekUser] = useState('');
+  const [bountyToOpen, setBountyToOpen] = useState(null);
 
   const fetchStats = async () => {
     const token = localStorage.getItem('authToken');
@@ -519,6 +520,15 @@ const Dashboard = ({ currentUser, onLogout, setCurrentUser }) => {
     };
     window.addEventListener('openUserPeek', handler);
     return () => window.removeEventListener('openUserPeek', handler);
+  }, []);
+
+  // Global listener for leader to open bounty from ClansPanel
+  useEffect(() => {
+    const handler = (e) => {
+      const id = e?.detail?.bountyId; if (id) { setActiveTab('bounty'); setBountyToOpen(id); }
+    };
+    window.addEventListener('openBountyFromLeader', handler);
+    return () => window.removeEventListener('openBountyFromLeader', handler);
   }, []);
 
   // Load stored notifications on login/mount
@@ -560,6 +570,7 @@ const Dashboard = ({ currentUser, onLogout, setCurrentUser }) => {
             message: payload.message,
             city: payload.city || '',
             payload: payload.payload || null,
+            context_bounty_id: payload.context_bounty_id,
             created_at: payload.created_at || new Date().toISOString().slice(0, 19).replace('T', ' '),
             read_at: null,
           };
@@ -624,7 +635,7 @@ const Dashboard = ({ currentUser, onLogout, setCurrentUser }) => {
   if (activeTab === 'scan') {
     main = <EarnPoints currentUser={currentUser} updatePoints={updatePoints} />;
   } else if (activeTab === 'bounty') {
-    main = <WasteBounty currentUser={currentUser} updatePoints={updatePoints} />;
+    main = <WasteBounty currentUser={currentUser} updatePoints={updatePoints} bountyToOpen={bountyToOpen} />;
   } else if (activeTab === 'clans') {
     main = <ClansPanel currentUser={currentUser} />;
   } else if (activeTab === 'friends') {
@@ -690,7 +701,19 @@ const Dashboard = ({ currentUser, onLogout, setCurrentUser }) => {
                       notifications.map((n) => (
                         <div key={n.id || Math.random()} className="p-3 hover:bg-white/5">
                           <div className="flex items-start justify-between">
-                            <div>
+                            <div onClick={() => {
+                              // Route to specific section based on notification
+                              const t = (n.type||'');
+                              if (t === 'FRIEND_REQUEST' || t === 'FRIEND_ACCEPTED') {
+                                setActiveTab('friends');
+                              } else if (t === 'CLAN_JOIN_REQUEST' || t === 'CLAN_JOIN_DECISION') {
+                                setActiveTab('clans');
+                              } else if (t === 'BOUNTY_CREATED' || t === 'CLAN_BOUNTY_REQUEST' || t === 'CLAN_BOUNTY_DECISION') {
+                                setActiveTab('bounty');
+                                if (n.context_bounty_id) setBountyToOpen(n.context_bounty_id);
+                              }
+                              setNotifOpen(false);
+                            }} className="cursor-pointer">
                               <div className="text-gray-100 text-sm font-medium">{n.title}</div>
                               <div className="text-gray-300 text-xs">{n.message}</div>
                               <div className="text-gray-500 text-[11px] mt-1">{formatDateTime(n.created_at)}</div>

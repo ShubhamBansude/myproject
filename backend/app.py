@@ -998,6 +998,33 @@ def init_db() -> None:
 		conn.execute('CREATE INDEX IF NOT EXISTS idx_clan_join_requests_applicant ON clan_join_requests(applicant_user_id)')
 		conn.commit()
 
+		# Clan bounty participation claims (member requests leader approval to participate)
+		conn.execute(
+			(
+				'CREATE TABLE IF NOT EXISTS clan_bounty_claims ('
+				'  id INTEGER PRIMARY KEY AUTOINCREMENT,'
+				'  bounty_id INTEGER NOT NULL,'
+				'  clan_id INTEGER NOT NULL,'
+				'  requested_by_user_id INTEGER NOT NULL,'
+				'  people_strength INTEGER NOT NULL CHECK (people_strength >= 0 AND people_strength <= 20),'
+				'  scheduled_at DATETIME,'
+				'  status TEXT NOT NULL CHECK (status IN ("pending","approved","rejected")) DEFAULT "pending",'
+				'  decided_by_user_id INTEGER,'
+				'  decided_at DATETIME,'
+				'  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,'
+				'  updated_at DATETIME,'
+				'  FOREIGN KEY(bounty_id) REFERENCES waste_bounty(id),'
+				'  FOREIGN KEY(clan_id) REFERENCES clans(id),'
+				'  FOREIGN KEY(requested_by_user_id) REFERENCES users(id),'
+				'  FOREIGN KEY(decided_by_user_id) REFERENCES users(id)'
+				')'
+			)
+		)
+		conn.execute('CREATE INDEX IF NOT EXISTS idx_cbc_clan_status ON clan_bounty_claims(clan_id, status)')
+		conn.execute('CREATE INDEX IF NOT EXISTS idx_cbc_bounty_status ON clan_bounty_claims(bounty_id, status)')
+		conn.execute('CREATE INDEX IF NOT EXISTS idx_cbc_requester ON clan_bounty_claims(requested_by_user_id)')
+		conn.commit()
+
 		# Friends and direct messages
 		conn.execute(
 			(
@@ -2471,7 +2498,7 @@ def list_notifications() -> Tuple[Any, int]:
             pass
 
         rows = conn.execute(
-            'SELECT id, type, title, message, city, payload, created_at, read_at FROM notifications WHERE user_id = ? ORDER BY id DESC LIMIT ?',
+            'SELECT id, type, title, message, city, payload, created_at, read_at, context_bounty_id FROM notifications WHERE user_id = ? ORDER BY id DESC LIMIT ?',
             (user_id, limit)
         ).fetchall()
         notifications = []
@@ -2484,7 +2511,8 @@ def list_notifications() -> Tuple[Any, int]:
                 'city': r[4],
                 'payload': json.loads(r[5]) if r[5] else None,
                 'created_at': r[6],
-                'read_at': r[7]
+                'read_at': r[7],
+                'context_bounty_id': r[8]
             })
     return jsonify({"notifications": notifications}), 200
 
@@ -2838,6 +2866,19 @@ def verify_cleanup() -> Tuple[Any, int]:
         bounty_lat, bounty_lon, original_image_url, status = row[0], row[1], row[2], row[3]
         if status != 'REPORTED':
             return jsonify({"error": "bounty is no longer available"}), 400
+
+    # Before proceeding, block cleanup if there is a pending clan claim on this bounty
+    try:
+        with get_db_connection() as conn:
+            pending_claim = conn.execute(
+                'SELECT 1 FROM clan_bounty_claims WHERE bounty_id = ? AND status = "pending" LIMIT 1',
+                (bounty_id,)
+            ).fetchone()
+            if pending_claim is not None:
+                return jsonify({"error": "Clan participation request pending approval for this bounty. Please wait for leader decision or ask leader to approve."}), 409
+    except Exception:
+        # Do not block on errors here; continue
+        pass
 
     # Load original image for comparison
     original_image_path = os.path.join(os.path.dirname(__file__), original_image_url.lstrip('/'))
@@ -3672,6 +3713,218 @@ def decide_clan_join_request():
             pass
         return jsonify({"status": decision}), 200
 
+
+@app.route('/api/bounty_clan_claims', methods=['POST'])
+def create_bounty_clan_claim() -> Tuple[Any, int]:
+    """Create a clan participation claim for a bounty. Members require leader approval."""
+    username = parse_username_from_auth()
+    if not username:
+        return jsonify({"error": "unauthorized"}), 401
+    data: Dict[str, Any] = request.get_json(silent=True) or {}
+    try:
+        bounty_id = int(data.get('bounty_id'))
+    except Exception:
+        return jsonify({"error": "invalid bounty_id"}), 400
+    people_strength = data.get('people_strength')
+    try:
+        people_strength = int(people_strength)
+    except Exception:
+        return jsonify({"error": "people_strength must be 0-20"}), 400
+    if people_strength < 0 or people_strength > 20:
+        return jsonify({"error": "people_strength must be 0-20"}), 400
+    scheduled_at = (data.get('scheduled_at') or '').strip() or None
+
+    with get_db_connection() as conn:
+        # Validate user and clan
+        u = _get_user(conn, username)
+        if u is None:
+            return jsonify({"error": "user not found"}), 404
+        user_id = int(u["id"]) if isinstance(u, dict) else int(u[0])
+        clan_row = conn.execute(
+            'SELECT c.id as clan_id, c.leader_user_id, cu.username as leader_username '\
+            'FROM clans c JOIN users cu ON cu.id = c.leader_user_id '\
+            'JOIN clan_members cm ON cm.clan_id = c.id '\
+            'WHERE cm.user_id = ?',
+            (user_id,)
+        ).fetchone()
+        if clan_row is None:
+            return jsonify({"error": "not in a clan"}), 400
+        clan_id = int(clan_row["clan_id"]) if isinstance(clan_row, dict) else int(clan_row[0])
+        leader_user_id = int(clan_row["leader_user_id"]) if isinstance(clan_row, dict) else int(clan_row[1])
+        leader_username = str(clan_row["leader_username"]) if isinstance(clan_row, dict) else str(clan_row[2])
+
+        # Validate bounty exists
+        b = conn.execute('SELECT id, city FROM waste_bounty WHERE id = ?', (bounty_id,)).fetchone()
+        if b is None:
+            return jsonify({"error": "bounty not found"}), 404
+
+        # Prevent duplicate outstanding claim for same clan+bounty
+        existing = conn.execute(
+            'SELECT id, status FROM clan_bounty_claims WHERE bounty_id = ? AND clan_id = ? ORDER BY id DESC LIMIT 1',
+            (bounty_id, clan_id)
+        ).fetchone()
+        if existing is not None:
+            status = (existing[1] or '').lower()
+            if status in ('pending', 'approved'):
+                return jsonify({"error": f"clan already has a {status} claim for this bounty"}), 400
+
+        # Insert claim
+        is_leader = (user_id == leader_user_id)
+        if is_leader:
+            conn.execute(
+                'INSERT INTO clan_bounty_claims (bounty_id, clan_id, requested_by_user_id, people_strength, scheduled_at, status, decided_by_user_id, decided_at) '
+                'VALUES (?, ?, ?, ?, ?, "approved", ?, CURRENT_TIMESTAMP)',
+                (bounty_id, clan_id, user_id, people_strength, scheduled_at, user_id)
+            )
+            claim_id = conn.execute('SELECT last_insert_rowid()').fetchone()[0]
+            conn.commit()
+            return jsonify({"status": "approved", "claim_id": int(claim_id)}), 201
+        else:
+            conn.execute(
+                'INSERT INTO clan_bounty_claims (bounty_id, clan_id, requested_by_user_id, people_strength, scheduled_at, status) '
+                'VALUES (?, ?, ?, ?, ?, "pending")',
+                (bounty_id, clan_id, user_id, people_strength, scheduled_at)
+            )
+            claim_id = conn.execute('SELECT last_insert_rowid()').fetchone()[0]
+            # Notify clan leader
+            try:
+                # Persist leader notification with context_bounty_id
+                leader_id_row = conn.execute('SELECT id FROM users WHERE username = ?', (leader_username,)).fetchone()
+                if leader_id_row:
+                    conn.execute(
+                        'INSERT INTO notifications (user_id, type, title, message, payload, context_bounty_id) VALUES (?, ?, ?, ?, ?, ?)',
+                        (
+                            int(leader_id_row[0]),
+                            'CLAN_BOUNTY_REQUEST',
+                            'Bounty participation request',
+                            f'@{username} requested to participate in bounty #{bounty_id}',
+                            json.dumps({"clan_id": clan_id, "bounty_id": bounty_id, "people_strength": people_strength, "scheduled_at": scheduled_at}),
+                            bounty_id
+                        )
+                    )
+                conn.commit()
+                notify_user(leader_username, {
+                    "id": None,
+                    "type": "CLAN_BOUNTY_REQUEST",
+                    "title": "Bounty participation request",
+                    "message": f"@{username} requested to participate in bounty #{bounty_id}",
+                    "payload": {"clan_id": clan_id, "bounty_id": bounty_id, "people_strength": people_strength, "scheduled_at": scheduled_at},
+                    "context_bounty_id": bounty_id,
+                    "created_at": time.strftime('%Y-%m-%d %H:%M:%S')
+                })
+            except Exception:
+                pass
+            conn.commit()
+            return jsonify({"status": "pending", "claim_id": int(claim_id)}), 201
+
+
+@app.route('/api/clan_bounty_claims', methods=['GET'])
+def list_clan_bounty_claims() -> Tuple[Any, int]:
+    """Leader: list pending clan bounty claims for my clan."""
+    username = parse_username_from_auth()
+    if not username:
+        return jsonify({"error": "unauthorized"}), 401
+    with get_db_connection() as conn:
+        leader = _get_user(conn, username)
+        if leader is None:
+            return jsonify({"error": "user not found"}), 404
+        # Identify clan led by user
+        row = conn.execute('SELECT id FROM clans WHERE leader_user_id = ?', (leader["id"] if isinstance(leader, dict) else leader[0],)).fetchone()
+        if row is None:
+            return jsonify({"claims": []}), 200
+        clan_id = int(row[0])
+        rows = conn.execute(
+            'SELECT cbc.id, cbc.bounty_id, u.username as requester, cbc.people_strength, cbc.scheduled_at, cbc.created_at, '
+            '       wb.city, wb.state, wb.country, wb.waste_image_url '
+            'FROM clan_bounty_claims cbc '
+            'JOIN users u ON u.id = cbc.requested_by_user_id '
+            'JOIN waste_bounty wb ON wb.id = cbc.bounty_id '
+            'WHERE cbc.clan_id = ? AND cbc.status = "pending" '
+            'ORDER BY cbc.created_at ASC',
+            (clan_id,)
+        ).fetchall()
+        claims: List[Dict[str, Any]] = []
+        for r in rows:
+            claims.append({
+                "id": r[0],
+                "bounty_id": r[1],
+                "requested_by_username": r[2],
+                "people_strength": r[3],
+                "scheduled_at": r[4],
+                "created_at": r[5],
+                "city": r[6],
+                "state": r[7],
+                "country": r[8],
+                "waste_image_url": r[9],
+            })
+        return jsonify({"claims": claims}), 200
+
+
+@app.route('/api/clan_bounty_claims/decision', methods=['POST'])
+def decide_clan_bounty_claim() -> Tuple[Any, int]:
+    """Leader approves or rejects a clan bounty participation request."""
+    username = parse_username_from_auth()
+    if not username:
+        return jsonify({"error": "unauthorized"}), 401
+    data: Dict[str, Any] = request.get_json(silent=True) or {}
+    try:
+        claim_id = int(data.get('claim_id'))
+    except Exception:
+        return jsonify({"error": "invalid claim_id"}), 400
+    decision = (data.get('decision') or '').strip().lower()
+    if decision not in ('approve', 'reject'):
+        return jsonify({"error": "decision must be approve or reject"}), 400
+    with get_db_connection() as conn:
+        leader = _get_user(conn, username)
+        if leader is None:
+            return jsonify({"error": "user not found"}), 404
+        # Load claim and clan
+        r = conn.execute('SELECT bounty_id, clan_id, requested_by_user_id, status FROM clan_bounty_claims WHERE id = ?', (claim_id,)).fetchone()
+        if r is None:
+            return jsonify({"error": "claim not found"}), 404
+        bounty_id, clan_id, requested_by_user_id, status = int(r[0]), int(r[1]), int(r[2]), (r[3] or '').lower()
+        if status != 'pending':
+            return jsonify({"error": "claim already decided"}), 400
+        # Verify current user is the leader of this clan
+        is_leader = conn.execute('SELECT 1 FROM clans WHERE id = ? AND leader_user_id = ?', (clan_id, leader["id"] if isinstance(leader, dict) else leader[0])).fetchone()
+        if is_leader is None:
+            return jsonify({"error": "forbidden"}), 403
+        new_status = 'approved' if decision == 'approve' else 'rejected'
+        conn.execute(
+            'UPDATE clan_bounty_claims SET status = ?, decided_by_user_id = ?, decided_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+            (new_status, leader["id"] if isinstance(leader, dict) else leader[0], claim_id)
+        )
+        # Notify requester
+        req_user_row = conn.execute('SELECT username FROM users WHERE id = ?', (requested_by_user_id,)).fetchone()
+        if req_user_row:
+            req_username = req_user_row[0]
+            # Persist notification with context_bounty_id
+            conn.execute(
+                'INSERT INTO notifications (user_id, type, title, message, payload, context_bounty_id) VALUES (?, ?, ?, ?, ?, ?)',
+                (
+                    requested_by_user_id,
+                    'CLAN_BOUNTY_DECISION',
+                    'Clan bounty request updated',
+                    f'Your clan bounty request was {new_status} for bounty #{bounty_id}',
+                    json.dumps({"decision": new_status, "bounty_id": bounty_id, "claim_id": claim_id}),
+                    bounty_id
+                )
+            )
+            conn.commit()
+            try:
+                notify_user(req_username, {
+                    "id": None,
+                    "type": "CLAN_BOUNTY_DECISION",
+                    "title": "Clan bounty request updated",
+                    "message": f"Your clan bounty request was {new_status} for bounty #{bounty_id}",
+                    "payload": {"decision": new_status, "bounty_id": bounty_id, "claim_id": claim_id},
+                    "context_bounty_id": bounty_id,
+                    "created_at": time.strftime('%Y-%m-%d %H:%M:%S')
+                })
+            except Exception:
+                pass
+        conn.commit()
+        return jsonify({"status": new_status}), 200
 
 @app.route('/api/clan_chat', methods=['GET'])
 def get_clan_chat():

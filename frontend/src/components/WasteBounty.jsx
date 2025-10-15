@@ -6,7 +6,7 @@ import { apiUrl } from '../lib/api';
 // Location checks removed for claiming bounty; EXIF parsing bypassed
 const loadEXIF = async () => null;
 
-const WasteBounty = ({ updatePoints, currentUser }) => {
+const WasteBounty = ({ updatePoints, currentUser, bountyToOpen }) => {
     const [activeTab, setActiveTab] = useState('report'); // 'report', 'bounties', 'cleanup'
     const [bounties, setBounties] = useState([]);
     const [loading, setLoading] = useState(false);
@@ -38,6 +38,13 @@ const WasteBounty = ({ updatePoints, currentUser }) => {
     const [chatInputByBounty, setChatInputByBounty] = useState({}); // { [bountyId]: string }
     const [chatLoadingByBounty, setChatLoadingByBounty] = useState({}); // { [bountyId]: boolean }
 
+    // Clan participation modal state
+    const [participateOpen, setParticipateOpen] = useState(false);
+    const [participateDate, setParticipateDate] = useState('');
+    const [participateTime, setParticipateTime] = useState('');
+    const [peopleStrength, setPeopleStrength] = useState(0);
+    const [participateSubmitting, setParticipateSubmitting] = useState(false);
+
     // Leaderboard states
     const [topUsers, setTopUsers] = useState([]);
     const [topClans, setTopClans] = useState([]);
@@ -50,6 +57,28 @@ const WasteBounty = ({ updatePoints, currentUser }) => {
             loadBounties();
         }
     }, [activeTab]);
+
+    // When instructed to open a bounty (from notifications or leader panel)
+    useEffect(() => {
+        if (!bountyToOpen) return;
+        const open = async () => {
+            // Ensure list loaded
+            if (bounties.length === 0) {
+                await loadBounties();
+            }
+            const b = (bounties || []).find(x => String(x.id) === String(bountyToOpen));
+            if (b) {
+                setSelectedBounty(b);
+                setActiveTab('cleanup');
+                _setCleanupStep('before');
+            } else {
+                setActiveTab('bounties');
+                setSuccess('Opening bounty… refresh to find it in your city list.');
+            }
+        };
+        open();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [bountyToOpen]);
 
     const loadBounties = async () => {
         setLoading(true);
@@ -303,6 +332,43 @@ const WasteBounty = ({ updatePoints, currentUser }) => {
         setSelectedBounty(bounty);
         setActiveTab('cleanup');
         _setCleanupStep('before');
+    };
+
+    const openParticipateWithClan = (bounty) => {
+        setSelectedBounty(bounty);
+        setParticipateOpen(true);
+        setParticipateDate('');
+        setParticipateTime('');
+        setPeopleStrength(0);
+        setSuccess(null);
+        setError(null);
+    };
+
+    const submitParticipateWithClan = async () => {
+        if (!selectedBounty) return;
+        const token = localStorage.getItem('authToken');
+        if (!token) { setError('Please login first'); return; }
+        setParticipateSubmitting(true); setError(''); setSuccess('');
+        try {
+            const scheduled_at = (participateDate && participateTime) ? `${participateDate} ${participateTime}:00` : null;
+            const res = await fetch(apiUrl('/api/bounty_clan_claims'), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                body: JSON.stringify({ bounty_id: selectedBounty.id, people_strength: Math.max(0, Math.min(20, Number(peopleStrength)||0)), scheduled_at })
+            });
+            const data = await res.json();
+            if (!res.ok) { setError(data?.error || 'Failed to submit clan participation'); return; }
+            if (data.status === 'approved') {
+                setSuccess('Leader participation auto-approved (you are the leader). You can turn in now.');
+            } else {
+                setSuccess('Request sent to your clan leader for approval.');
+            }
+            setParticipateOpen(false);
+        } catch {
+            setError('Network error.');
+        } finally {
+            setParticipateSubmitting(false);
+        }
     };
 
     const toggleChat = async (bountyId) => {
@@ -687,12 +753,20 @@ const WasteBounty = ({ updatePoints, currentUser }) => {
                                     </div>
                                     {/* Chat toggle */}
                                     <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
-                                        <button
-                                            onClick={() => claimBounty(bounty)}
-                                            className="py-2 bg-eco-accent text-eco-dark font-semibold rounded-lg hover:brightness-110 transition-colors"
-                                        >
-                                            Claim & Submit Cleanup Photos
-                                        </button>
+                                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                            <button
+                                                onClick={() => claimBounty(bounty)}
+                                                className="py-2 bg-eco-accent text-eco-dark font-semibold rounded-lg hover:brightness-110 transition-colors"
+                                            >
+                                                Turn in as Individual
+                                            </button>
+                                            <button
+                                                onClick={() => openParticipateWithClan(bounty)}
+                                                className="py-2 bg-white/10 text-gray-200 font-semibold rounded-lg hover:bg-white/20 transition-colors"
+                                            >
+                                                Participate with Clan
+                                            </button>
+                                        </div>
                                         <button
                                             onClick={() => toggleChat(bounty.id)}
                                             className="py-2 bg-white/10 text-gray-200 font-semibold rounded-lg hover:bg-white/20 transition-colors"
@@ -929,7 +1003,39 @@ const WasteBounty = ({ updatePoints, currentUser }) => {
             )}
             </div>
 
-            {null}
+            {/* Participate with Clan Modal */}
+            {participateOpen && selectedBounty && (
+                <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/60">
+                    <div className="w-full max-w-md rounded-xl bg-[#0b1220] border border-white/10 p-4">
+                        <div className="flex items-center justify-between mb-2">
+                            <div className="text-gray-100 font-semibold">Participate with Clan</div>
+                            <button onClick={()=>setParticipateOpen(false)} className="text-sm text-gray-300 hover:text-white">✖</button>
+                        </div>
+                        <div className="text-xs text-gray-400 mb-3">Select date, time and people strength (0-20). If you are the clan leader, participation is auto-approved and you can turn in. Otherwise, your leader must approve.</div>
+                        <div className="space-y-3">
+                            <div className="grid grid-cols-2 gap-2">
+                                <div>
+                                    <label className="block text-xs text-gray-300 mb-1">Date</label>
+                                    <input type="date" value={participateDate} onChange={(e)=>setParticipateDate(e.target.value)} className="w-full px-3 py-2 rounded bg-black/40 border border-white/10 text-gray-100" />
+                                </div>
+                                <div>
+                                    <label className="block text-xs text-gray-300 mb-1">Time</label>
+                                    <input type="time" value={participateTime} onChange={(e)=>setParticipateTime(e.target.value)} className="w-full px-3 py-2 rounded bg-black/40 border border-white/10 text-gray-100" />
+                                </div>
+                            </div>
+                            <div>
+                                <label className="block text-xs text-gray-300 mb-1">People strength (0-20)</label>
+                                <input type="number" min={0} max={20} value={peopleStrength} onChange={(e)=>setPeopleStrength(e.target.value)} className="w-full px-3 py-2 rounded bg-black/40 border border-white/10 text-gray-100" />
+                            </div>
+                            <div className="flex items-center justify-end gap-2">
+                                <button onClick={()=>setParticipateOpen(false)} className="px-3 py-2 text-xs rounded-lg bg-white/5 border border-white/10 text-gray-200">Cancel</button>
+                                <button onClick={submitParticipateWithClan} disabled={participateSubmitting} className="px-3 py-2 text-xs rounded-lg bg-eco-green text-eco-dark font-semibold">{participateSubmitting?'Submitting…':'Submit'}</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
+
         </div>
     );
 };

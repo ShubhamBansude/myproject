@@ -11,6 +11,7 @@ const ClansPanel = ({ currentUser }) => {
   const [newClanName, setNewClanName] = useState('');
   const [joinCode, setJoinCode] = useState('');
   const [pendingRequests, setPendingRequests] = useState([]);
+  const [bountyClaims, setBountyClaims] = useState([]);
 
   const token = useMemo(() => localStorage.getItem('authToken'), []);
 
@@ -25,15 +26,21 @@ const ClansPanel = ({ currentUser }) => {
       const list = await listRes.json();
       if (mineRes.ok) setMyClan(mine.clan || null); else setError(mine?.error || 'Failed to load my clan');
       if (listRes.ok) setCityClans(Array.isArray(list.clans) ? list.clans : []); else setError(list?.error || 'Failed to load clans');
-      // If leader, load requests
+      // If leader, load requests and bounty claims
       if (mine?.clan?.leader_username && mine.clan.leader_username === currentUser?.username) {
         try {
           const r = await fetch(apiUrl('/api/clan_join_requests'), { headers: { Authorization: `Bearer ${token}` } });
           const d = await r.json();
           if (r.ok) setPendingRequests(Array.isArray(d.requests) ? d.requests : []);
         } catch {}
+        try {
+          const r2 = await fetch(apiUrl('/api/clan_bounty_claims'), { headers: { Authorization: `Bearer ${token}` } });
+          const d2 = await r2.json();
+          if (r2.ok) setBountyClaims(Array.isArray(d2.claims) ? d2.claims : []);
+        } catch {}
       } else {
         setPendingRequests([]);
+        setBountyClaims([]);
       }
     } catch (e) {
       setError('Network error.');
@@ -249,6 +256,32 @@ const ClansPanel = ({ currentUser }) => {
                 </div>
               </div>
             )}
+          </div>
+        )}
+
+        {isLeader && (
+          <div className="mt-4">
+            <div className="text-gray-300 text-sm mb-1">Clan Bounty Participation Requests</div>
+            <div className="space-y-2 max-h-56 overflow-auto pr-1">
+              {bountyClaims.length === 0 ? (
+                <div className="text-gray-400 text-xs">No bounty requests.</div>
+              ) : bountyClaims.map(r => (
+                <div key={r.id} className="p-2 rounded bg-white/5 border border-white/10">
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <div className="text-gray-100 text-sm">Bounty #{r.bounty_id} · @{r.requested_by_username}</div>
+                      <div className="text-gray-400 text-xs">{r.city}{r.state?`, ${r.state}`:''} · People {r.people_strength}{r.scheduled_at?` · ${r.scheduled_at}`:''}</div>
+                    </div>
+                    <img src={apiUrl(r.waste_image_url)} alt="bounty" className="w-12 h-12 rounded object-cover" />
+                  </div>
+                  <div className="mt-2 flex items-center gap-2">
+                    <button onClick={async ()=>{ try{ const res = await fetch(apiUrl('/api/clan_bounty_claims/decision'), { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ claim_id: r.id, decision: 'approve' })}); const d = await res.json(); if(res.ok){ setSuccess('Approved.'); load(); } else setError(d?.error||'Failed'); } catch{ setError('Network error.'); } }} className="px-2 py-1 rounded bg-eco-green/20 text-eco-green text-xs">Approve</button>
+                    <button onClick={async ()=>{ try{ const res = await fetch(apiUrl('/api/clan_bounty_claims/decision'), { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ claim_id: r.id, decision: 'reject' })}); const d = await res.json(); if(res.ok){ setSuccess('Rejected.'); load(); } else setError(d?.error||'Failed'); } catch{ setError('Network error.'); } }} className="px-2 py-1 rounded bg-red-500/20 text-red-200 text-xs">Reject</button>
+                    <button onClick={()=>{ /* open bounty in WasteBounty tab via dashboard event */ window.dispatchEvent(new CustomEvent('openBountyFromLeader',{ detail:{ bountyId: r.bounty_id } })); }} className="px-2 py-1 rounded bg-white/10 text-gray-200 text-xs">Open bounty</button>
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         )}
       </div>
