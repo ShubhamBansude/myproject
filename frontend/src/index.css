@@ -51,3 +51,9 @@
 }
 
 /* Optionally additional CSS or overrides */
+
+/* Performance hints */
+@media (prefers-reduced-motion: no-preference) {
+  .will-change-transform { will-change: transform; }
+  .will-change-opacity { will-change: opacity; }
+}

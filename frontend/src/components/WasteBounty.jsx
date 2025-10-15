@@ -348,6 +348,7 @@ const WasteBounty = ({ updatePoints, currentUser }) => {
 
         setLoading(true);
         setError(null);
+        setSuccess('');
 
         try {
             const token = localStorage.getItem('authToken');
@@ -364,11 +365,17 @@ const WasteBounty = ({ updatePoints, currentUser }) => {
                 formData.append('after_longitude', String(afterLocation.longitude));
             }
 
+            // Add a client-side timeout to avoid getting stuck on slow network
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 30000);
+
             const res = await fetch(apiUrl('/api/verify_cleanup'), {
                 method: 'POST',
                 headers: { 'Authorization': `Bearer ${token}` },
-                body: formData
+                body: formData,
+                signal: controller.signal,
             });
+            clearTimeout(timeoutId);
 
             const data = await res.json();
             if (!res.ok) {
@@ -395,8 +402,12 @@ const WasteBounty = ({ updatePoints, currentUser }) => {
             _setCleanupStep('before');
             setActiveTab('bounties');
             loadBounties(); // Refresh bounties list
-        } catch {
-            setError('Network error. Please try again.');
+        } catch (e) {
+            if (e?.name === 'AbortError') {
+                setError('Verification is taking too long. Please try again.');
+            } else {
+                setError('Network error. Please try again.');
+            }
         } finally {
             setLoading(false);
         }

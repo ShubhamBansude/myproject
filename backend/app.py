@@ -94,6 +94,20 @@ def generate_image_hash(image_bytes: bytes) -> str:
 	return hashlib.sha256(image_bytes).hexdigest()
 
 
+def resize_image_for_model(image: np.ndarray, max_dimension: int = 1024) -> np.ndarray:
+    """Downscale very large images to speed up model calls without losing essential detail."""
+    if image is None or not isinstance(image, np.ndarray) or image.size == 0:
+        return image
+    height, width = image.shape[:2]
+    largest_dimension = max(height, width)
+    if largest_dimension <= max_dimension:
+        return image
+    scale = max_dimension / float(largest_dimension)
+    new_width = max(1, int(round(width * scale)))
+    new_height = max(1, int(round(height * scale)))
+    return cv2.resize(image, (new_width, new_height), interpolation=cv2.INTER_AREA)
+
+
 def extract_gps_from_image(image_bytes: bytes) -> tuple:
     """
     Extract GPS coordinates from image EXIF data.
@@ -589,15 +603,23 @@ def analyze_with_gemini(image: np.ndarray) -> Dict[str, Any]:
 			"fallback": True,
 			"message": "Gemini API not available"
 		}
-	
+
 	try:
-		# Convert OpenCV image to PIL Image
-		image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+		resized_image = resize_image_for_model(image)
+		image_rgb = cv2.cvtColor(resized_image, cv2.COLOR_BGR2RGB)
 		pil_image = Image.fromarray(image_rgb)
-		
-		# Initialize Gemini model
-		model = genai.GenerativeModel('gemini-2.0-flash')
-		
+
+		model = genai.GenerativeModel(
+			'gemini-2.0-flash',
+			generation_config={
+				"response_mime_type": "application/json",
+				"temperature": 0.2,
+				"top_p": 0.8,
+				"top_k": 40,
+				"max_output_tokens": 512,
+			},
+		)
+
 		# Create comprehensive prompt for waste detection and analysis
 		prompt = """
 		You are an expert waste detection and classification AI. Analyze this image thoroughly and identify ALL waste items present.
@@ -658,8 +680,8 @@ def analyze_with_gemini(image: np.ndarray) -> Dict[str, Any]:
 		}
 		"""
 		
-		# Generate response
-		response = model.generate_content([prompt, pil_image])
+		# Generate response with an explicit timeout to avoid hanging
+		response = model.generate_content([prompt, pil_image], request_options={"timeout": 25})
 		
 		if not response or not response.text:
 			return {
@@ -690,7 +712,7 @@ def analyze_with_gemini(image: np.ndarray) -> Dict[str, Any]:
 				"raw_response": response_text,
 				"summary": "Unable to parse response"
 			}
-		
+
 		try:
 			result = json.loads(json_text)
 		except json.JSONDecodeError:
@@ -713,7 +735,7 @@ def analyze_with_gemini(image: np.ndarray) -> Dict[str, Any]:
 		# Ensure items key exists
 		if "items" not in result:
 			result["items"] = []
-		
+
 		return result
 		
 	except Exception as e:
@@ -2573,18 +2595,29 @@ def verify_cleanup_with_gemini(original_image: np.ndarray, before_image: np.ndar
 			"fallback": True
 		}
 	
-	try:
-		# Convert OpenCV images to PIL Images
-		images = []
-		for img in [original_image, before_image, after_image]:
-			image_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-			pil_image = Image.fromarray(image_rgb)
-			images.append(pil_image)
-		
-		# Initialize Gemini model
-		model = genai.GenerativeModel('gemini-2.0-flash')
-		
-		# Use the enhanced prompt for comprehensive waste detection without relying on GPS
+    try:
+        resized_original = resize_image_for_model(original_image)
+        resized_before = resize_image_for_model(before_image)
+        resized_after = resize_image_for_model(after_image)
+
+        images: List[Image.Image] = []
+        for img in [resized_original, resized_before, resized_after]:
+            image_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            pil_image = Image.fromarray(image_rgb)
+            images.append(pil_image)
+
+        model = genai.GenerativeModel(
+            'gemini-2.0-flash',
+            generation_config={
+                "response_mime_type": "application/json",
+                "temperature": 0.1,
+                "top_p": 0.8,
+                "top_k": 40,
+                "max_output_tokens": 256,
+            },
+        )
+
+        # Use the enhanced prompt for comprehensive waste detection without relying on GPS
 		prompt = """Analyze this sequence of three images for cleanup verification: Image 1 (Original Report Photo), Image 2 (User's Before Cleanup), and Image 3 (User's After Cleanup).
 
 Scene Match: Using only visual cues (static background features such as walls, trees, unique objects, landmarks, shorelines, etc.), determine if Image 2 and Image 3 show the same scene/viewpoint (exclude the garbage itself). Respond strictly with: scene_match: true/false.
@@ -2606,8 +2639,8 @@ Cleanup Result: Is the garbage, waste, or pollution visible in Image 2 now absen
 
 Respond with a compact JSON object only (no prose): {"scene_match": [true/false], "waste_present_before": [true/false], "cleanup_verified": [true/false]}"""
 		
-		# Generate response
-		response = model.generate_content([prompt] + images)
+        # Generate response with explicit timeout to avoid hanging
+        response = model.generate_content([prompt] + images, request_options={"timeout": 25})
 		
 		if not response or not response.text:
 			return {
@@ -2641,7 +2674,7 @@ Respond with a compact JSON object only (no prose): {"scene_match": [true/false]
 				"raw_response": response_text
 			}
 		
-		try:
+        try:
 			result = json.loads(json_text)
 		except json.JSONDecodeError:
 			return {
@@ -2660,9 +2693,9 @@ Respond with a compact JSON object only (no prose): {"scene_match": [true/false]
 		if "cleanup_verified" not in result:
 			result["cleanup_verified"] = False
 		
-		return result
+        return result
 		
-	except Exception as e:
+    except Exception as e:
 		print(f"Gemini cleanup verification error: {str(e)}")
 		return {
 			"error": f"Gemini cleanup verification failed: {str(e)}",
@@ -2743,6 +2776,10 @@ def verify_cleanup() -> Tuple[Any, int]:
     original_image = cv2.imread(original_image_path)
     before_image = cv2.imread(before_path)
     after_image = cv2.imread(after_path)
+
+    # Validate successful decoding to prevent downstream hangs
+    if original_image is None or before_image is None or after_image is None:
+        return jsonify({"error": "invalid image(s) uploaded for verification"}), 400
 
     # Verify cleanup with Gemini AI
     if not GEMINI_AVAILABLE and not dev_mode:
