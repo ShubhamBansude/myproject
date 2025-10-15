@@ -48,6 +48,51 @@
       opacity: 0.8;
     }
   }
+
+  /* Rotating circle spinner around buttons */
+  @keyframes spinCircle {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+  }
 }
 
 /* Optionally additional CSS or overrides */
+
+/* Shared rotating circle button decoration */
+.btn-rotating {
+  position: relative;
+  overflow: hidden;
+}
+.btn-rotating::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 140%;
+  height: 140%;
+  transform: translate(-50%, -50%);
+  border-radius: 9999px;
+  border: 2px dashed rgba(255,255,255,0.25);
+  animation: spinCircle 2s linear infinite;
+  pointer-events: none;
+}
+/* Theme accent on hover */
+.btn-rotating:hover::before {
+  border-color: rgba(245, 158, 11, 0.45);
+}
+
+/* Suggestions dropdown themed colors (orange/green/black) */
+.suggestions-panel {
+  background: rgba(15, 23, 42, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+.suggestions-panel.has-results {
+  background: rgba(24, 24, 27, 0.95);
+  border-color: rgba(245, 158, 11, 0.35);
+}
+.suggestions-item {
+  color: #e5e7eb;
+}
+.suggestions-item:hover {
+  background: rgba(245, 158, 11, 0.18);
+}

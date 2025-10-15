@@ -15,14 +15,24 @@ function App() {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [currentUser, setCurrentUser] = useState(null); // Stores user data {id, username, points}
 
-  // Effect to check for an existing token on load
+  // Effect to restore session from storage on load
   useEffect(() => {
-    const token = localStorage.getItem('authToken');
-    if (token) {
-      // Mock user data for demo purposes
-      setIsLoggedIn(true);
-      setCurrentUser({ username: 'Demo User', total_points: 1250 }); 
-      setView('dashboard');
+    try {
+      const token = localStorage.getItem('authToken');
+      const userRaw = localStorage.getItem('authUser');
+      if (token && userRaw) {
+        const user = JSON.parse(userRaw);
+        setIsLoggedIn(true);
+        setCurrentUser(user);
+        setView('dashboard');
+      }
+    } catch {
+      // Corrupt storage – clear and fallback to welcome
+      localStorage.removeItem('authToken');
+      localStorage.removeItem('authUser');
+      setIsLoggedIn(false);
+      setCurrentUser(null);
+      setView('welcome');
     }
   }, []);
 
@@ -49,6 +59,7 @@ function App() {
   // Handler for successful login/signup
   const handleAuthSuccess = (userData, token) => {
     localStorage.setItem('authToken', token);
+    try { localStorage.setItem('authUser', JSON.stringify(userData)); } catch { /* ignore */ }
     setIsLoggedIn(true);
     setCurrentUser(userData);
     setView('dashboard');
@@ -56,10 +67,19 @@ function App() {
 
   const handleLogout = () => {
     localStorage.removeItem('authToken');
+    localStorage.removeItem('authUser');
     setIsLoggedIn(false);
     setCurrentUser(null);
     setView('welcome');
   };
+
+  // Keep stored user in sync with in-memory changes
+  useEffect(() => {
+    if (!isLoggedIn) return;
+    try {
+      if (currentUser) localStorage.setItem('authUser', JSON.stringify(currentUser));
+    } catch { /* ignore */ }
+  }, [isLoggedIn, currentUser]);
 
   let content;
   

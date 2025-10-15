@@ -55,7 +55,7 @@ const Login = ({ onLoginSuccess, onForgot }) => {
                 </button>
             </div>
             {error && <div className="text-red-400 text-sm bg-red-500/10 border border-red-500/30 rounded-lg p-2">{error}</div>}
-            <button type="submit" className="w-full py-3 bg-eco-green text-white font-semibold rounded-xl hover:brightness-110 transition duration-300 shadow-[0_8px_30px_rgba(16,185,129,0.25)]">
+            <button type="submit" className="btn-rotating w-full py-3 bg-eco-green text-white font-semibold rounded-xl hover:brightness-110 transition duration-300 shadow-[0_8px_30px_rgba(16,185,129,0.25)]">
                 Log In
             </button>
             <div className="text-right">
@@ -93,7 +93,7 @@ const AutoSuggestInput = ({ label, placeholder, value, onChange, onSelect, sugge
                 {...inputProps}
             />
             {open && (
-                <div className={`absolute z-20 mt-1 w-full max-h-72 overflow-auto rounded-lg border shadow-2xl backdrop-blur-sm ${hasSuggestions ? 'bg-emerald-900/90 border-emerald-400/30' : 'bg-[#0f172a]/95 border-white/10'}`}>
+                <div className={`absolute z-20 mt-1 w-full max-h-72 overflow-auto rounded-lg border shadow-2xl backdrop-blur-sm suggestions-panel ${hasSuggestions ? 'has-results' : ''}`}>
                     {/* Suggestions */}
                     {filtered.length > 0 ? (
                         filtered.map((s, idx) => (
@@ -102,7 +102,7 @@ const AutoSuggestInput = ({ label, placeholder, value, onChange, onSelect, sugge
                                 type="button"
                                 onMouseDown={(e) => e.preventDefault()}
                                 onClick={() => { (onSelect ? onSelect(s) : onChange(s)); setOpen(false); }}
-                                className="w-full text-left px-3 py-2 text-sm text-gray-200 hover:bg-emerald-500/20"
+                                className="suggestions-item w-full text-left px-3 py-2 text-sm"
                             >
                                 {s}
                             </button>
@@ -203,7 +203,7 @@ const ForgotPassword = ({ onBackToLogin }) => {
                     </div>
                     {error && <div className="text-red-400 text-sm bg-red-500/10 border border-red-500/30 rounded-lg p-2">{error}</div>}
                     {message && <div className="text-green-300 text-sm bg-emerald-500/10 border border-emerald-500/30 rounded-lg p-2">{message}</div>}
-                    <button type="submit" className="w-full py-3 bg-eco-accent text-eco-dark font-semibold rounded-xl hover:brightness-110 transition">Reset Password</button>
+            <button type="submit" className="btn-rotating w-full py-3 bg-eco-accent text-eco-dark font-semibold rounded-xl hover:brightness-110 transition">Reset Password</button>
                     <button type="button" onClick={onBackToLogin} className="w-full py-2 text-xs text-gray-300 hover:text-gray-100 underline">Back to Login</button>
                 </form>
             )}
@@ -398,7 +398,7 @@ const Signup = ({ onSignupSuccess }) => {
                 inputProps={{ disabled: !selectedStateObj }}
             />
             {error && <div className="text-red-400 text-sm bg-red-500/10 border border-red-500/30 rounded-lg p-2">{error}</div>}
-            <button type="submit" className="w-full py-3 bg-eco-accent text-eco-dark font-semibold rounded-xl hover:brightness-110 transition duration-300 shadow-[0_8px_30px_rgba(245,158,11,0.25)]">
+            <button type="submit" className="btn-rotating w-full py-3 bg-eco-accent text-eco-dark font-semibold rounded-xl hover:brightness-110 transition duration-300 shadow-[0_8px_30px_rgba(245,158,11,0.25)]">
                 Create Account
             </button>
         </form>
