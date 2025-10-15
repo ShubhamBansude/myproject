@@ -1514,9 +1514,9 @@ def generate_carbon_warrior_certificate(username: str, meta: Optional[Dict[str, 
     comp_w = comp_bbox[2] - comp_bbox[0]
     draw.text(((width - comp_w) // 2, mission_y + 120), compliment, fill=(4, 120, 87), font=poppins_semibold)
 
-    # Additional info per spec
-    info_y = mission_y + 200
-    loc_and_date = "Location: Baramau, Maharashtra, India. Issued on: October 15, 2025."
+    # Additional info per spec (moved closer to bottom)
+    info_y = height - border_margin - 300
+    loc_and_date = "Location: Baramau, Maharashtra, India. Issued on: October 1, 2025."
     lad_bbox = draw.textbbox((0, 0), loc_and_date, font=poppins_regular)
     lad_w = lad_bbox[2] - lad_bbox[0]
     draw.text(((width - lad_w) // 2, info_y), loc_and_date, fill=(71, 85, 105), font=poppins_regular)
