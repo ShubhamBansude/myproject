@@ -45,6 +45,19 @@ DB_PATH = os.path.join(os.path.dirname(__file__), 'rewards_db.sqlite')
 POINTS_PER_DETECTION = 100
 NON_RECYCLABLE_FLAT_POINTS = 50
 
+# New rewards and pricing configuration
+BOUNTY_REPORTER_REWARD = 400
+INDIVIDUAL_BOUNTY_REWARD = 2000
+CLAN_BOUNTY_REWARD = 6000
+
+# Detection scoring bounds for images
+DETECT_IMAGE_MIN_POINTS = 10
+DETECT_IMAGE_MAX_POINTS = 40
+
+# Coupon pricing normalization
+COUPON_MIN_COST = 1000
+COUPON_MAX_COST = 4000
+
 # Gemini API configuration
 def _load_gemini_api_key() -> Optional[str]:
     """
@@ -770,9 +783,9 @@ def seed_coupons(conn: Connection) -> None:
 		conn.executemany(
 			'INSERT INTO coupons (name, points_cost, coupon_code, description, is_active) VALUES (?, ?, ?, ?, ?)',
 			[
-				('10% Off Eco-Store Voucher', 500, 'ECOSAVE10', 'Get 10% off on sustainable products.', 1),
-				('Free Digital Sticker Pack', 100, 'DIGISTICKER', 'A pack of 5 exclusive digital stickers.', 1),
-				('₹50 Discount on Coffee', 750, 'COFFEE50', 'Valid at selected partner cafes.', 1),
+				('10% Off Eco-Store Voucher', 1000, 'ECOSAVE10', 'Get 10% off on sustainable products.', 1),
+				('Free Digital Sticker Pack', 1000, 'DIGISTICKER', 'A pack of 5 exclusive digital stickers.', 1),
+				('₹50 Discount on Coffee', 1200, 'COFFEE50', 'Valid at selected partner cafes.', 1),
 			]
 		)
 		conn.commit()
@@ -846,8 +859,12 @@ def ensure_curated_coupons(conn: Connection) -> None:
 
     for item in curated:
         try:
+            # Normalize curated coupon costs into the global [COUPON_MIN_COST, COUPON_MAX_COST] range
             low, high = item["points"]
-            points_cost = random.randint(int(low), int(high))
+            # Map existing ranges into new window while preserving relative spread
+            # Use midpoint as a heuristic when old range falls outside new bounds
+            mid = (int(low) + int(high)) // 2
+            points_cost = max(COUPON_MIN_COST, min(COUPON_MAX_COST, mid))
             conn.execute(
                 'INSERT OR IGNORE INTO coupons (name, points_cost, coupon_code, description, is_active, external_url, source) '
                 'VALUES (?, ?, ?, ?, 1, ?, ?)',
@@ -1567,7 +1584,7 @@ def generate_carbon_warrior_certificate(username: str, meta: Optional[Dict[str, 
 @app.route('/api/redeem_certificate', methods=['POST'])
 def redeem_certificate() -> Tuple[Any, int]:
     """
-    Redeem the Carbon Warrior certificate for 500 points (one-time only).
+    Redeem the Carbon Warrior certificate for 5000 points (one-time only).
     Deduct points, record transaction, increment redemptions, generate certificate PDF,
     and return the file URL and updated total points. If already issued, returns existing URL.
     """
@@ -1575,7 +1592,7 @@ def redeem_certificate() -> Tuple[Any, int]:
     if not username:
         return jsonify({"error": "missing auth token"}), 401
 
-    COST = 500
+    COST = 5000
     with get_db_connection() as conn:
         urow = conn.execute('SELECT id, total_points, city, state, country FROM users WHERE username = ?', (username,)).fetchone()
         if urow is None:
@@ -2215,6 +2232,18 @@ def list_coupons() -> Tuple[Any, int]:
     with get_db_connection() as conn:
         # Ensure curated coupons are available
         ensure_curated_coupons(conn)
+        # Clamp existing coupon costs into policy window 1000–4000
+        try:
+            conn.execute(
+                'UPDATE coupons SET points_cost = CASE '
+                'WHEN points_cost < ? THEN ? '
+                'WHEN points_cost > ? THEN ? '
+                'ELSE points_cost END',
+                (COUPON_MIN_COST, COUPON_MIN_COST, COUPON_MAX_COST, COUPON_MAX_COST)
+            )
+            conn.commit()
+        except Exception:
+            pass
         rows = conn.execute(
             'SELECT id, name, points_cost, coupon_code, description, external_url, source '
             'FROM coupons '
@@ -2553,6 +2582,20 @@ def create_bounty() -> Tuple[Any, int]:
 			(user_id, latitude, longitude, user_country, user_state, user_city, f"/uploads/{image_filename}")
 		)
 		bounty_id = cur.lastrowid
+		# Award reporter for raising bounty
+		try:
+			# Fetch current points
+			u = conn.execute('SELECT total_points FROM users WHERE id = ?', (user_id,)).fetchone()
+			current_total = int(u[0]) if u else 0
+			new_total = current_total + BOUNTY_REPORTER_REWARD
+			conn.execute('UPDATE users SET total_points = ? WHERE id = ?', (new_total, user_id))
+			conn.execute(
+				'INSERT INTO transactions (user_id, points_change, reason) VALUES (?, ?, ?)',
+				(user_id, BOUNTY_REPORTER_REWARD, f'Bounty Reported - Bounty #{bounty_id}')
+			)
+		except Exception:
+			# Non-fatal failure; continue even if reward could not be applied
+			pass
 		conn.commit()
 
 	# Fan-out notification to users in the same city (excluding reporter)
@@ -3342,19 +3385,6 @@ def verify_cleanup() -> Tuple[Any, int]:
             ).fetchone()
             if pending_claim is not None:
                 return jsonify({"error": "Clan participation request pending approval for this bounty. Please wait for leader decision or ask leader to approve."}), 409
-            # Additionally, if the current user is in a clan that already has an approved claim for this bounty,
-            # block individual cleanup submissions to enforce clan coordination.
-            urow = conn.execute('SELECT id FROM users WHERE username = ?', (username,)).fetchone()
-            if urow is not None:
-                uid = int(urow[0])
-                my_clan = conn.execute('SELECT clan_id FROM clan_members WHERE user_id = ?', (uid,)).fetchone()
-                if my_clan is not None:
-                    approved = conn.execute(
-                        'SELECT 1 FROM clan_bounty_claims WHERE bounty_id = ? AND clan_id = ? AND status = "approved" LIMIT 1',
-                        (bounty_id, int(my_clan[0]))
-                    ).fetchone()
-                    if approved is not None:
-                        return jsonify({"error": "Your clan has registered this bounty. Individual turn-in is disabled. Coordinate via your clan."}), 409
     except Exception:
         # Do not block on errors here; continue
         pass
@@ -3412,9 +3442,13 @@ def verify_cleanup() -> Tuple[Any, int]:
     if scene_match and waste_present_before and cleanup_verified:
         # Cleanup approved - update bounty and award points
         with get_db_connection() as conn:
-            # Get bounty points
-            bounty_row = conn.execute('SELECT bounty_points FROM waste_bounty WHERE id = ?', (bounty_id,)).fetchone()
-            bounty_points = int(bounty_row[0]) if bounty_row else 200
+            # Determine if clan-approved participation exists for this bounty for the user's clan
+            u_clan_id = None
+            try:
+                u_clan_row = conn.execute('SELECT clan_id FROM clan_members WHERE user_id = (SELECT id FROM users WHERE username = ?)', (username,)).fetchone()
+                u_clan_id = int(u_clan_row[0]) if u_clan_row else None
+            except Exception:
+                u_clan_id = None
 
             # Update bounty status and persist image URLs
             conn.execute(
@@ -3422,18 +3456,65 @@ def verify_cleanup() -> Tuple[Any, int]:
                 (user_id, f"/uploads/{before_filename}", f"/uploads/{after_filename}", bounty_id),
             )
 
-            # Award points to user
-            new_total = current_points + bounty_points
-            conn.execute('UPDATE users SET total_points = ? WHERE id = ?', (new_total, user_id))
-            conn.execute(
-                'INSERT INTO transactions (user_id, points_change, reason) VALUES (?, ?, ?)',
-                (user_id, bounty_points, f'Bounty Cleanup Completed - Bounty #{bounty_id}')
-            )
+            points_awarded_to_requester = 0
+            # If there is an approved clan claim for the user's clan, distribute clan reward equally
+            clan_awarded = False
+            if u_clan_id is not None:
+                approved = conn.execute(
+                    'SELECT 1 FROM clan_bounty_claims WHERE bounty_id = ? AND clan_id = ? AND status = "approved" LIMIT 1',
+                    (bounty_id, u_clan_id)
+                ).fetchone()
+                if approved is not None:
+                    clan_awarded = True
+                    # Fetch all clan members
+                    members = conn.execute(
+                        'SELECT u.id FROM clan_members cm JOIN users u ON u.id = cm.user_id WHERE cm.clan_id = ?',
+                        (u_clan_id,)
+                    ).fetchall()
+                    member_ids = [int(r[0]) for r in members] if members else []
+                    if member_ids:
+                        base = CLAN_BOUNTY_REWARD // len(member_ids)
+                        remainder = CLAN_BOUNTY_REWARD - (base * len(member_ids))
+                        # Leader should receive remainder first if exists
+                        leader_row = conn.execute('SELECT leader_user_id FROM clans WHERE id = ?', (u_clan_id,)).fetchone()
+                        leader_id = int(leader_row[0]) if leader_row else None
+                        # Build distribution map
+                        distribution: Dict[int, int] = {mid: base for mid in member_ids}
+                        if remainder > 0:
+                            # Try to allocate to leader
+                            if leader_id in distribution:
+                                distribution[leader_id] += remainder
+                            else:
+                                # Allocate remainder to the first N members deterministically
+                                for i in range(remainder):
+                                    distribution[member_ids[i % len(member_ids)]] += 1
+                        # Apply updates and transactions
+                        for mid, inc in distribution.items():
+                            conn.execute('UPDATE users SET total_points = total_points + ? WHERE id = ?', (inc, mid))
+                            conn.execute('INSERT INTO transactions (user_id, points_change, reason) VALUES (?, ?, ?)', (mid, inc, f'Clan Bounty Cleanup Completed - Bounty #{bounty_id}'))
+                        # Set requester share for response
+                        if user_id in distribution:
+                            points_awarded_to_requester = distribution[user_id]
+                    else:
+                        # No members? Fallback award to requester only
+                        conn.execute('UPDATE users SET total_points = total_points + ? WHERE id = ?', (CLAN_BOUNTY_REWARD, user_id))
+                        conn.execute('INSERT INTO transactions (user_id, points_change, reason) VALUES (?, ?, ?)', (user_id, CLAN_BOUNTY_REWARD, f'Clan Bounty Cleanup Completed - Bounty #{bounty_id}'))
+                        points_awarded_to_requester = CLAN_BOUNTY_REWARD
+
+            if not clan_awarded:
+                # Individual reward
+                conn.execute('UPDATE users SET total_points = total_points + ? WHERE id = ?', (INDIVIDUAL_BOUNTY_REWARD, user_id))
+                conn.execute('INSERT INTO transactions (user_id, points_change, reason) VALUES (?, ?, ?)', (user_id, INDIVIDUAL_BOUNTY_REWARD, f'Bounty Cleanup Completed - Bounty #{bounty_id}'))
+                points_awarded_to_requester = INDIVIDUAL_BOUNTY_REWARD
+
+            # Read back updated total for requester
+            total_row = conn.execute('SELECT total_points FROM users WHERE id = ?', (user_id,)).fetchone()
+            new_total = int(total_row[0]) if total_row else (current_points + points_awarded_to_requester)
             conn.commit()
 
         return jsonify({
             "message": "Cleanup verified successfully! Points awarded.",
-            "points_awarded": bounty_points,
+            "points_awarded": points_awarded_to_requester,
             "total_points": new_total,
             "verification_result": verification_result,
             "dev_mode": dev_mode,
@@ -3521,15 +3602,18 @@ def detect() -> Tuple[Any, int]:
 		# Build a signature of all detected items to prevent repeat spamming
 		detection_signature = ','.join(sorted(all_detected_items)) if all_detected_items else ''
 
-		# Points awarding logic based on Gemini classification
+		# Points awarding logic (image): 10–40 per image based on hazard/recyclability
 		awarded_points = 0
 		message = ''
-		if recyclable_items or hazardous_items:
-			awarded_points = POINTS_PER_DETECTION * len(set(recyclable_items) | set(hazardous_items))
-			message = 'Recyclable/Hazardous waste detected. Points awarded.'
+		if hazardous_items:
+			awarded_points = DETECT_IMAGE_MAX_POINTS  # 40
+			message = 'Hazardous waste detected. Maximum image points awarded.'
+		elif recyclable_items:
+			awarded_points = max(DETECT_IMAGE_MIN_POINTS, min(DETECT_IMAGE_MAX_POINTS, 30))
+			message = 'Recyclable waste detected. Elevated image points awarded.'
 		elif all_detected_items:
-			awarded_points = NON_RECYCLABLE_FLAT_POINTS
-			message = 'Waste detected. Flat points awarded.'
+			awarded_points = DETECT_IMAGE_MIN_POINTS
+			message = 'General waste detected. Minimum image points awarded.'
 		else:
 			message = 'No waste detected.'
 		

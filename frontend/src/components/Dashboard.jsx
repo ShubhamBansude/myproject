@@ -123,7 +123,7 @@ const RewardsShop = ({ onRedeem }) => {
             Features themed design with cleanliness and recycling motifs, Swachh Bharat Mission logo and VPKBIET logo.
           </div>
           <div className="mt-3 flex items-center justify-between">
-            <span className="px-3 py-1 rounded-full bg-eco-green/20 text-eco-green border border-eco-green/30 text-sm">500 pts</span>
+            <span className="px-3 py-1 rounded-full bg-eco-green/20 text-eco-green border border-eco-green/30 text-sm">5000 pts</span>
             {!certUrl ? (
               <button onClick={redeemCertificate} disabled={redeemingCert} className="px-3 py-2 rounded-lg bg-eco-green text-white text-sm hover:brightness-110 disabled:opacity-60">
                 {redeemingCert ? 'Generating…' : 'Get Certificate'}
