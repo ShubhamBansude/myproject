@@ -40,8 +40,7 @@ const WasteBounty = ({ updatePoints, currentUser, bountyToOpen }) => {
 
     // Clan participation modal state
     const [participateOpen, setParticipateOpen] = useState(false);
-    const [participateDate, setParticipateDate] = useState('');
-    const [participateTime, setParticipateTime] = useState('');
+    const [participateWhen, setParticipateWhen] = useState(''); // HTML datetime-local value
     const [peopleStrength, setPeopleStrength] = useState(0);
     const [participateSubmitting, setParticipateSubmitting] = useState(false);
 
@@ -354,8 +353,7 @@ const WasteBounty = ({ updatePoints, currentUser, bountyToOpen }) => {
     const openParticipateWithClan = (bounty) => {
         setSelectedBounty(bounty);
         setParticipateOpen(true);
-        setParticipateDate('');
-        setParticipateTime('');
+        setParticipateWhen('');
         setPeopleStrength(0);
         setSuccess(null);
         setError(null);
@@ -367,8 +365,10 @@ const WasteBounty = ({ updatePoints, currentUser, bountyToOpen }) => {
         if (!token) { setError('Please login first'); return; }
         setParticipateSubmitting(true); setError(''); setSuccess('');
         try {
-            // Send ISO-like string; backend now normalizes
-            const scheduled_at = (participateDate && participateTime) ? `${participateDate} ${participateTime}:00` : null;
+            // Convert datetime-local (YYYY-MM-DDTHH:MM) to server format 'YYYY-MM-DD HH:MM:SS'
+            const scheduled_at = participateWhen
+                ? participateWhen.replace('T', ' ') + (participateWhen.length === 16 ? ':00' : '')
+                : null;
             const res = await fetch(apiUrl('/api/bounty_clan_claims'), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
@@ -1048,15 +1048,14 @@ const WasteBounty = ({ updatePoints, currentUser, bountyToOpen }) => {
                         </div>
                         <div className="text-xs text-gray-400 mb-3">Select date, time and people strength (0-20). If you are the clan leader, participation is auto-approved and you can turn in. Otherwise, your leader must approve.</div>
                         <div className="space-y-3">
-                            <div className="grid grid-cols-2 gap-2">
-                                <div>
-                                    <label className="block text-xs text-gray-300 mb-1">Date</label>
-                                    <input type="date" value={participateDate} onChange={(e)=>setParticipateDate(e.target.value)} className="w-full px-3 py-2 rounded bg-black/40 border border-white/10 text-gray-100" />
-                                </div>
-                                <div>
-                                    <label className="block text-xs text-gray-300 mb-1">Time</label>
-                                    <input type="time" value={participateTime} onChange={(e)=>setParticipateTime(e.target.value)} className="w-full px-3 py-2 rounded bg-black/40 border border-white/10 text-gray-100" />
-                                </div>
+                            <div>
+                                <label className="block text-xs text-gray-300 mb-1">Date & Time</label>
+                                <input
+                                    type="datetime-local"
+                                    value={participateWhen}
+                                    onChange={(e)=>setParticipateWhen(e.target.value)}
+                                    className="w-full px-3 py-2 rounded bg-black/40 border border-white/10 text-gray-100"
+                                />
                             </div>
                             <div>
                                 <label className="block text-xs text-gray-300 mb-1">People strength (0-20)</label>

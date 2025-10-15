@@ -1516,49 +1516,31 @@ def notify_user(recipient_username: str, payload: Dict[str, Any]) -> None:
 
 # ======== Clean-buddy Bot ========
 def _generate_clean_buddy_reply(prompt_text: str, user_city: Optional[str] = None) -> str:
-    """Generate a concise, on-topic waste-management tip or answer.
-    Uses Gemini when available; otherwise falls back to curated tips.
+    """Generate a concise AI answer to any user question.
+    Prefers Gemini if available; otherwise returns a simple echo with a tip.
     """
     safe_prompt = (prompt_text or '').strip()
-    domain_guard = (
-        "You are Clean-buddy, a friendly assistant that ONLY answers about waste management, recycling, garbage segregation, cleanliness drives, clean city challenges, composting, e-waste, plastic reduction, and Swachh Bharat-aligned tips."
-        " If the user asks anything off-topic, politely redirect to waste-management topics and give a relevant tip."
-        " Keep responses under 120 words. Provide specific, practical actions and, when relevant, mention city context if provided."
-    )
     if GEMINI_AVAILABLE and genai is not None:
         try:
             model = genai.GenerativeModel('gemini-1.5-flash')
-            prompt = f"{domain_guard}\n\nUser message: {safe_prompt}\nCity: {user_city or 'Unknown'}\n\nAnswer:"
+            # Minimal steering only: be helpful and concise, include city if relevant
+            system = (
+                "You are Clean-buddy, a helpful, concise assistant. "
+                "Answer the user's question helpfully in under 120 words. "
+                "If city context is relevant, consider it."
+            )
+            prompt = f"{system}\n\nCity: {user_city or 'Unknown'}\nUser: {safe_prompt}\nAssistant:"
             out = model.generate_content(prompt)
             text = (out.text or '').strip()
             if text:
                 return text
         except Exception:
             pass
-    # Fallback curated tips
-    tips = [
-        "Segregate waste at source: keep separate bins for wet, dry, and hazardous items.",
-        "Rinse and dry plastic, glass, and metal before putting them in recycling.",
-        "Start a simple compost bin for kitchen scraps; it reduces landfill waste and creates soil.",
-        "Carry a reusable bottle and bag to cut down single-use plastic.",
-        "E-waste (batteries, chargers, bulbs) should go to authorized collection centers only.",
-        "Organize a monthly lane clean-up with neighbors; small teams make big impact.",
-        "Label bins clearly at home and work: Paper, Plastics, Metals, Glass, E-waste, Wet.",
-        "Report illegal dumping with geotagged photos to local authorities for quick cleanup.",
-        "Reduce food waste by planning meals and storing perishables properly.",
-    ]
-    # Simple keyword branching
-    low = safe_prompt.lower()
-    if any(k in low for k in ("compost", "wet", "organic")):
-        return "For composting, collect wet waste (veg peels, tea, eggshells) in a lidded bin with dry leaves; stir weekly and keep moist—compost is ready in 6–8 weeks."
-    if any(k in low for k in ("plastic", "bottle", "poly", "bag")):
-        return "Reduce plastic: carry a cloth bag, reuse containers, and drop clean plastic at a reliable recycler; avoid thin carry bags under local norms."
-    if any(k in low for k in ("ewaste", "e-waste", "battery", "bulb", "electronics")):
-        return "Never bin e-waste. Store batteries, bulbs, and small gadgets separately and hand them over to an authorized e-waste collector."
-    if any(k in low for k in ("clean", "garbage", "litter", "street")):
-        return "Do a 15-minute daily micro-clean around your home. Use gloves, segregate collected waste, and log issues to your city app for pickup."
-    # Default random tip
-    return random.choice(tips)
+    # Lightweight fallback when Gemini is unavailable or fails
+    base = "I’m a lightweight assistant without AI right now."
+    if safe_prompt:
+        return f"{base} You asked: '{safe_prompt}'. Tip: stay curious and verify information."
+    return f"{base} Ask me anything."
 
 
 @app.route('/api/clean_buddy', methods=['GET'])
@@ -1585,7 +1567,7 @@ def get_clean_buddy_chat() -> Tuple[Any, int]:
                 messages.append({"id": r[0], "sender_username": "Clean-buddy", "message": r[2], "created_at": r[3]})
         # Ensure an initial greeting exists
         if not rows:
-            greeting = "Hi! I’m Clean-buddy. Ask me anything about waste management, recycling, or cleanliness."
+            greeting = "Hi! I’m Clean-buddy. Ask me anything—I'll do my best to help."
             conn.execute('INSERT INTO clean_buddy_messages (user_id, role, message) VALUES (?, "bot", ?)', (uid, greeting))
             conn.commit()
             messages.append({"id": None, "sender_username": "Clean-buddy", "message": greeting, "created_at": datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')})
