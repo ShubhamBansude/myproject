@@ -34,27 +34,6 @@ const RewardsShop = ({ onRedeem }) => {
     if (token) load();
   }, [token]);
 
-  const syncGrabOn = async () => {
-    setError(''); setLoading(true);
-    try {
-      const res = await fetch(apiUrl('/api/sync_grabon'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ limit: 6 }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data?.error || 'Failed to sync coupons');
-      // Reload coupons after sync
-      const r = await fetch(apiUrl('/api/coupons'), { headers: { Authorization: `Bearer ${token}` } });
-      const d = await r.json();
-      if (!r.ok) throw new Error(d?.error || 'Failed to load coupons');
-      setCoupons(d.coupons || []);
-    } catch (e) {
-      setError(e.message);
-    } finally {
-      setLoading(false);
-    }
-  };
 
   // On mount/load, check if user already has a certificate issued
   useEffect(() => {
@@ -113,9 +92,8 @@ const RewardsShop = ({ onRedeem }) => {
     <div>
       {loading && <div className="text-gray-300">Loading...</div>}
       {error && <div className="p-3 mb-3 text-sm text-red-300 bg-red-500/10 border border-red-500/20 rounded">{error}</div>}
-      <div className="flex items-center justify-between mb-3">
+      <div className="flex items-center mb-3">
         <div className="text-sm text-gray-300">Redeem eco-friendly coupons with your points.</div>
-        <button onClick={syncGrabOn} className="px-3 py-2 rounded-md bg-white/10 border border-white/20 text-gray-100 text-sm hover:bg-white/20">Fetch GrabOn Coupons</button>
       </div>
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {/* Carbon Warrior Certificate card */}
