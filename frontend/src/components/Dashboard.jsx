@@ -354,7 +354,7 @@ const FriendsPanel = () => {
               {botMsgs.length===0 && <div className="text-xs text-gray-400">No messages yet.</div>}
             </div>
             <div className="mt-2 flex items-center gap-2">
-              <input type="text" value={botText} onChange={(e)=>setBotText(e.target.value)} placeholder="Ask Clean-buddy about waste…" className="flex-1 px-3 py-2 rounded bg-black/40 border border-white/10 text-gray-100" />
+              <input type="text" value={botText} onChange={(e)=>setBotText(e.target.value)} placeholder="Ask anything…" className="flex-1 px-3 py-2 rounded bg-black/40 border border-white/10 text-gray-100" />
               <button onClick={sendBot} disabled={!botText.trim()} className={`px-3 py-2 rounded text-sm font-semibold ${(!botText.trim())?'bg-gray-500/40 text-gray-300':'bg-eco-green text-eco-dark'}`}>Send</button>
             </div>
           </div>
