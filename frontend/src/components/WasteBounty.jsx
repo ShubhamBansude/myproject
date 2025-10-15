@@ -51,6 +51,9 @@ const WasteBounty = ({ updatePoints, currentUser, bountyToOpen }) => {
     const [lbLoading, setLbLoading] = useState(false);
     const [lbError, setLbError] = useState('');
 
+    // Clan membership flag
+    const [hasClan, setHasClan] = useState(false);
+
     // Load bounties on component mount
     useEffect(() => {
         if (activeTab === 'bounties') {
@@ -121,6 +124,20 @@ const WasteBounty = ({ updatePoints, currentUser, bountyToOpen }) => {
     };
 
     useEffect(() => { loadLeaderboard(); }, []);
+
+    // Check if user is in a clan (to enable/disable clan participation)
+    useEffect(() => {
+        const token = localStorage.getItem('authToken');
+        if (!token) { setHasClan(false); return; }
+        (async () => {
+            try {
+                const res = await fetch(apiUrl('/api/my_clan'), { headers: { Authorization: `Bearer ${token}` } });
+                const data = await res.json();
+                if (res.ok) setHasClan(!!data.clan);
+                else setHasClan(false);
+            } catch { setHasClan(false); }
+        })();
+    }, []);
 
     const getCurrentLocation = () => Promise.resolve(null);
 
@@ -350,6 +367,7 @@ const WasteBounty = ({ updatePoints, currentUser, bountyToOpen }) => {
         if (!token) { setError('Please login first'); return; }
         setParticipateSubmitting(true); setError(''); setSuccess('');
         try {
+            // Send ISO-like string; backend now normalizes
             const scheduled_at = (participateDate && participateTime) ? `${participateDate} ${participateTime}:00` : null;
             const res = await fetch(apiUrl('/api/bounty_clan_claims'), {
                 method: 'POST',
@@ -739,6 +757,11 @@ const WasteBounty = ({ updatePoints, currentUser, bountyToOpen }) => {
                                                 <span className="text-gray-400">
                                                     📍 {bounty.latitude.toFixed(4)}, {bounty.longitude.toFixed(4)}
                                                 </span>
+                                                {bounty.clan_claim_status && (
+                                                    <span className={`px-2 py-0.5 rounded-full text-xs border ${bounty.clan_claim_status==='approved' ? 'bg-eco-green/20 text-eco-green border-eco-green/30' : 'bg-amber-500/10 text-amber-200 border-amber-400/20'}`}>
+                                                        {bounty.clan_claim_status==='approved'?'Registered by your clan':'Clan request pending'}
+                                                    </span>
+                                                )}
                                             </div>
                                         </div>
                                         <div className="ml-4">
@@ -754,18 +777,30 @@ const WasteBounty = ({ updatePoints, currentUser, bountyToOpen }) => {
                                     {/* Chat toggle */}
                                     <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
                                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                                            <button
-                                                onClick={() => claimBounty(bounty)}
-                                                className="py-2 bg-eco-accent text-eco-dark font-semibold rounded-lg hover:brightness-110 transition-colors"
-                                            >
-                                                Turn in as Individual
-                                            </button>
-                                            <button
-                                                onClick={() => openParticipateWithClan(bounty)}
-                                                className="py-2 bg-white/10 text-gray-200 font-semibold rounded-lg hover:bg-white/20 transition-colors"
-                                            >
-                                                Participate with Clan
-                                            </button>
+                                            {(() => {
+                                                const clanStatus = (bounty.clan_claim_status || '').toLowerCase();
+                                                const disableAll = clanStatus === 'approved';
+                                                const inClan = hasClan;
+                                                return (
+                                                    <>
+                                                        <button
+                                                            onClick={() => claimBounty(bounty)}
+                                                            disabled={disableAll}
+                                                            className={`py-2 font-semibold rounded-lg transition-colors ${disableAll ? 'bg-gray-500/30 text-gray-300 cursor-not-allowed' : 'bg-eco-accent text-eco-dark hover:brightness-110'}`}
+                                                        >
+                                                            Turn in as Individual
+                                                        </button>
+                                                        <button
+                                                            onClick={() => openParticipateWithClan(bounty)}
+                                                            disabled={disableAll || !inClan}
+                                                            title={!inClan ? 'Join a clan to participate with clan' : undefined}
+                                                            className={`py-2 font-semibold rounded-lg transition-colors ${ (disableAll || !inClan) ? 'bg-gray-500/30 text-gray-300 cursor-not-allowed' : 'bg-white/10 text-gray-200 hover:bg-white/20'}`}
+                                                        >
+                                                            Participate with Clan
+                                                        </button>
+                                                    </>
+                                                );
+                                            })()}
                                         </div>
                                         <button
                                             onClick={() => toggleChat(bounty.id)}

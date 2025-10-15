@@ -2010,24 +2010,32 @@ def me() -> Tuple[Any, int]:
 
 @app.route('/api/coupons', methods=['GET'])
 def list_coupons() -> Tuple[Any, int]:
-	username = parse_username_from_auth()
-	if not username:
-		return jsonify({"error": "unauthorized"}), 401
-	with get_db_connection() as conn:
-		rows = conn.execute('SELECT id, name, points_cost, coupon_code, description, external_url, source FROM coupons WHERE is_active = 1 ORDER BY points_cost ASC').fetchall()
-		coupons = [
-			{
-				"id": r[0],
-				"name": r[1],
-				"points_cost": r[2],
-				"coupon_code": r[3],
-				"description": r[4],
-				"external_url": r[5],
-				"source": r[6],
-			}
-			for r in rows
-		]
-	return jsonify({"coupons": coupons}), 200
+    username = parse_username_from_auth()
+    if not username:
+        return jsonify({"error": "unauthorized"}), 401
+    # Only expose GrabOn-sourced coupons and a curated set of manual GrabOn codes
+    allowed_manual_codes = ('GRABON500', 'GRAB200', 'GRABLEAF350')
+    with get_db_connection() as conn:
+        rows = conn.execute(
+            'SELECT id, name, points_cost, coupon_code, description, external_url, source '
+            'FROM coupons '
+            'WHERE is_active = 1 AND (source = "GrabOn" OR coupon_code IN (?,?,?)) '
+            'ORDER BY points_cost ASC',
+            allowed_manual_codes,
+        ).fetchall()
+        coupons = [
+            {
+                "id": r[0],
+                "name": r[1],
+                "points_cost": r[2],
+                "coupon_code": r[3],
+                "description": r[4],
+                "external_url": r[5],
+                "source": r[6],
+            }
+            for r in rows
+        ]
+    return jsonify({"coupons": coupons}), 200
 
 
 @app.route('/api/sync_grabon', methods=['POST'])
@@ -2123,6 +2131,59 @@ def sync_grabon() -> Tuple[Any, int]:
     # Insert into DB with randomized point costs and generated codes
     inserted: List[Dict[str, Any]] = []
     with get_db_connection() as conn:
+        # 1) Ensure manual GrabOn coupons exist (with randomized points)
+        try:
+            manual_offers: List[Tuple[str, int, str, str, Optional[str], str]] = []
+            # Randomized points for manual coupons (between 500 and 1200)
+            def _rand_points() -> int:
+                return random.choice([500, 600, 700, 800, 900, 1000, 1200])
+            manual_offers.append((
+                'GrabOn ₹500 OFF - Sitewide',
+                _rand_points(),
+                'GRABON500',
+                'FLAT ₹500 OFF — Sitewide Offer: Up To 75% OFF + Extra ₹500 OFF On Your Orders',
+                None,
+                'GrabOn',
+            ))
+            manual_offers.append((
+                'GrabOn ₹200 OFF - Noise',
+                _rand_points(),
+                'GRAB200',
+                'Flat ₹200 OFF on Best Wearable & Audible Devices (Noise)',
+                None,
+                'GrabOn',
+            ))
+            manual_offers.append((
+                'GrabOn ₹350 OFF - Leaf',
+                _rand_points(),
+                'GRABLEAF350',
+                'Exclusive Offer — Sitewide: Save ₹350 OFF On Your Order (Leaf)',
+                None,
+                'GrabOn',
+            ))
+            for name, points_cost, code, desc, ext_url, src in manual_offers:
+                try:
+                    conn.execute(
+                        'INSERT OR IGNORE INTO coupons (name, points_cost, coupon_code, description, is_active, external_url, source) VALUES (?, ?, ?, ?, 1, ?, ?)',
+                        (name, int(points_cost), code, desc, ext_url, src)
+                    )
+                    row = conn.execute('SELECT id FROM coupons WHERE coupon_code = ?', (code,)).fetchone()
+                    if row:
+                        inserted.append({
+                            'id': int(row[0]),
+                            'name': name,
+                            'points_cost': int(points_cost),
+                            'coupon_code': code,
+                            'external_url': ext_url,
+                            'source': src,
+                        })
+                except Exception:
+                    pass
+        except Exception:
+            # Do not block GrabOn scraping if manual insertion fails
+            pass
+
+        # 2) Insert scraped GrabOn coupons
         for item in unique:
             name = item['title'] or 'Deal'
             # Assign a reasonable points cost: 300-1200
@@ -2412,9 +2473,29 @@ def get_bounties() -> Tuple[Any, int]:
         ).fetchall()
         print(f"Found {len(rows)} bounties for user city: {user_city}")
         
+        # Fetch clan claim status for these bounties relative to the viewer's clan
+        bounty_ids = [int(r[0]) for r in rows]
+        claim_status_by_bounty: Dict[int, Dict[str, Any]] = {}
+        try:
+            # Identify viewer clan (if any)
+            my_clan_row = conn.execute('SELECT cm.clan_id FROM clan_members cm JOIN users u ON u.id = cm.user_id WHERE u.username = ?', (username,)).fetchone()
+            my_clan_id = int(my_clan_row[0]) if my_clan_row else None
+            if bounty_ids and my_clan_id is not None:
+                # For each bounty, get latest claim status for this clan
+                q_marks = ','.join(['?'] * len(bounty_ids))
+                claim_rows = conn.execute(
+                    f'SELECT bounty_id, status FROM clan_bounty_claims WHERE clan_id = ? AND bounty_id IN ({q_marks}) '
+                    'GROUP BY bounty_id ORDER BY MAX(created_at) DESC',
+                    (my_clan_id, *bounty_ids)
+                ).fetchall()
+                for cr in claim_rows:
+                    claim_status_by_bounty[int(cr[0])] = {"clan_claim_status": (cr[1] or '').lower()}
+        except Exception:
+            pass
+
         bounties = []
         for row in rows:
-            bounties.append({
+            meta = {
                 "id": row[0],
                 "latitude": row[1],
                 "longitude": row[2],
@@ -2427,9 +2508,52 @@ def get_bounties() -> Tuple[Any, int]:
                 "before_image_url": row[9],
                 "after_image_url": row[10],
                 "reporter_username": row[11]
-            })
+            }
+            if int(row[0]) in claim_status_by_bounty:
+                meta.update(claim_status_by_bounty[int(row[0])])
+            bounties.append(meta)
     
     return jsonify({"bounties": bounties}), 200
+
+
+@app.route('/api/clan_registered_bounties', methods=['GET'])
+def clan_registered_bounties() -> Tuple[Any, int]:
+    """List approved clan bounty registrations for the current user's clan."""
+    username = parse_username_from_auth()
+    if not username:
+        return jsonify({"error": "unauthorized"}), 401
+    with get_db_connection() as conn:
+        # Determine user's clan
+        u = _get_user(conn, username)
+        if u is None:
+            return jsonify({"error": "user not found"}), 404
+        row = conn.execute('SELECT clan_id FROM clan_members WHERE user_id = ?', (u["id"],)).fetchone()
+        if row is None:
+            return jsonify({"bounties": []}), 200
+        clan_id = int(row[0])
+        rows = conn.execute(
+            'SELECT cbc.id, cbc.bounty_id, cbc.people_strength, cbc.scheduled_at, cbc.created_at, '
+            '       wb.city, wb.state, wb.country, wb.waste_image_url '
+            'FROM clan_bounty_claims cbc '
+            'JOIN waste_bounty wb ON wb.id = cbc.bounty_id '
+            'WHERE cbc.clan_id = ? AND cbc.status = "approved" '
+            'ORDER BY COALESCE(cbc.scheduled_at, cbc.created_at) DESC',
+            (clan_id,)
+        ).fetchall()
+        bounties: List[Dict[str, Any]] = []
+        for r in rows:
+            bounties.append({
+                "claim_id": r[0],
+                "bounty_id": r[1],
+                "people_strength": r[2],
+                "scheduled_at": r[3],
+                "created_at": r[4],
+                "city": r[5],
+                "state": r[6],
+                "country": r[7],
+                "waste_image_url": r[8],
+            })
+        return jsonify({"bounties": bounties}), 200
 
 
 @app.route('/api/bounty_chat', methods=['GET'])
@@ -3020,6 +3144,19 @@ def verify_cleanup() -> Tuple[Any, int]:
             ).fetchone()
             if pending_claim is not None:
                 return jsonify({"error": "Clan participation request pending approval for this bounty. Please wait for leader decision or ask leader to approve."}), 409
+            # Additionally, if the current user is in a clan that already has an approved claim for this bounty,
+            # block individual cleanup submissions to enforce clan coordination.
+            urow = conn.execute('SELECT id FROM users WHERE username = ?', (username,)).fetchone()
+            if urow is not None:
+                uid = int(urow[0])
+                my_clan = conn.execute('SELECT clan_id FROM clan_members WHERE user_id = ?', (uid,)).fetchone()
+                if my_clan is not None:
+                    approved = conn.execute(
+                        'SELECT 1 FROM clan_bounty_claims WHERE bounty_id = ? AND clan_id = ? AND status = "approved" LIMIT 1',
+                        (bounty_id, int(my_clan[0]))
+                    ).fetchone()
+                    if approved is not None:
+                        return jsonify({"error": "Your clan has registered this bounty. Individual turn-in is disabled. Coordinate via your clan."}), 409
     except Exception:
         # Do not block on errors here; continue
         pass
@@ -3876,7 +4013,24 @@ def create_bounty_clan_claim() -> Tuple[Any, int]:
         return jsonify({"error": "people_strength must be 0-20"}), 400
     if people_strength < 0 or people_strength > 20:
         return jsonify({"error": "people_strength must be 0-20"}), 400
-    scheduled_at = (data.get('scheduled_at') or '').strip() or None
+    scheduled_at_raw = (data.get('scheduled_at') or '').strip() or None
+    # Normalize scheduled_at to 'YYYY-MM-DD HH:MM:SS' if provided
+    def _normalize_dt(s: Optional[str]) -> Optional[str]:
+        if not s:
+            return None
+        try:
+            # Accept 'YYYY-MM-DD HH:MM[:SS]' or ISO 'YYYY-MM-DDTHH:MM[:SS]'
+            s2 = s.replace('T', ' ')
+            for fmt in ('%Y-%m-%d %H:%M:%S', '%Y-%m-%d %H:%M'):
+                try:
+                    dt = datetime.strptime(s2, fmt)
+                    return dt.strftime('%Y-%m-%d %H:%M:%S')
+                except Exception:
+                    continue
+        except Exception:
+            return None
+        return None
+    scheduled_at = _normalize_dt(scheduled_at_raw)
 
     with get_db_connection() as conn:
         # Validate user and clan

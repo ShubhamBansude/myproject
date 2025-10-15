@@ -12,6 +12,7 @@ const ClansPanel = ({ currentUser }) => {
   const [joinCode, setJoinCode] = useState('');
   const [pendingRequests, setPendingRequests] = useState([]);
   const [bountyClaims, setBountyClaims] = useState([]);
+  const [registeredBounties, setRegisteredBounties] = useState([]);
 
   const token = useMemo(() => localStorage.getItem('authToken'), []);
 
@@ -38,7 +39,14 @@ const ClansPanel = ({ currentUser }) => {
           const d2 = await r2.json();
           if (r2.ok) setBountyClaims(Array.isArray(d2.claims) ? d2.claims : []);
         } catch {}
-      } else {
+      }
+      // Load registered bounties for clan (approved)
+      try {
+        const r3 = await fetch(apiUrl('/api/clan_registered_bounties'), { headers: { Authorization: `Bearer ${token}` } });
+        const d3 = await r3.json();
+        if (r3.ok) setRegisteredBounties(Array.isArray(d3.bounties) ? d3.bounties : []);
+      } catch {}
+      if (!(mine?.clan?.leader_username && mine.clan.leader_username === currentUser?.username)) {
         setPendingRequests([]);
         setBountyClaims([]);
       }
@@ -278,6 +286,31 @@ const ClansPanel = ({ currentUser }) => {
                     <button onClick={async ()=>{ try{ const res = await fetch(apiUrl('/api/clan_bounty_claims/decision'), { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ claim_id: r.id, decision: 'approve' })}); const d = await res.json(); if(res.ok){ setSuccess('Approved.'); load(); } else setError(d?.error||'Failed'); } catch{ setError('Network error.'); } }} className="px-2 py-1 rounded bg-eco-green/20 text-eco-green text-xs">Approve</button>
                     <button onClick={async ()=>{ try{ const res = await fetch(apiUrl('/api/clan_bounty_claims/decision'), { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ claim_id: r.id, decision: 'reject' })}); const d = await res.json(); if(res.ok){ setSuccess('Rejected.'); load(); } else setError(d?.error||'Failed'); } catch{ setError('Network error.'); } }} className="px-2 py-1 rounded bg-red-500/20 text-red-200 text-xs">Reject</button>
                     <button onClick={()=>{ /* open bounty in WasteBounty tab via dashboard event */ window.dispatchEvent(new CustomEvent('openBountyFromLeader',{ detail:{ bountyId: r.bounty_id } })); }} className="px-2 py-1 rounded bg-white/10 text-gray-200 text-xs">Open bounty</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Registered bounties for clan (approved) */}
+        {myClan && (
+          <div className="mt-4">
+            <div className="text-gray-300 text-sm mb-1">Registered Bounties (Clan)</div>
+            <div className="space-y-2 max-h-56 overflow-auto pr-1">
+              {registeredBounties.length === 0 ? (
+                <div className="text-gray-400 text-xs">No registered bounties.</div>
+              ) : registeredBounties.map(rb => (
+                <div key={`${rb.claim_id}_${rb.bounty_id}`} className="p-2 rounded bg-white/5 border border-white/10">
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <div className="text-gray-100 text-sm">Bounty #{rb.bounty_id}</div>
+                      <div className="text-gray-400 text-xs">{rb.city}{rb.state?`, ${rb.state}`:''} · {rb.people_strength ? `People ${rb.people_strength} · `: ''}{(rb.scheduled_at||rb.created_at) ? new Date(((rb.scheduled_at||rb.created_at)+'').replace('T',' ').replace(' ','T')+'Z').toLocaleString() : ''}</div>
+                    </div>
+                    <img src={apiUrl(rb.waste_image_url)} alt="bounty" className="w-12 h-12 rounded object-cover" />
+                  </div>
+                  <div className="mt-2 flex items-center gap-2">
+                    <button onClick={()=>{ window.dispatchEvent(new CustomEvent('openBountyFromLeader',{ detail:{ bountyId: rb.bounty_id } })); }} className="px-2 py-1 rounded bg-white/10 text-gray-200 text-xs">Open bounty</button>
                   </div>
                 </div>
               ))}
