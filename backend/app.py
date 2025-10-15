@@ -1399,65 +1399,78 @@ def generate_carbon_warrior_certificate(username: str, meta: Optional[Dict[str, 
     poppins_regular = _load_ttf_font(os.path.join(assets_dir, 'Poppins-Regular.ttf'), 56) or ImageFont.load_default()
 
     # Logos
-    # Logos row at top
+    # Logos row at top (VPKBIET on left, Swachh Bharat on right)
     border_margin = 120
-    try:
-        sbm = Image.open(sbm_path).convert('RGBA')
-        sbm_height = 170
-        sbm = sbm.resize((int(sbm.width * sbm_height / sbm.height), sbm_height), Image.LANCZOS)
-        background.paste(sbm, (border_margin + 20, border_margin + 10), sbm)
-    except Exception:
-        pass
-
+    logos_y = border_margin + 10
+    top_reserved_y = logos_y
     try:
         vpk = Image.open(vpkb_path).convert('RGBA')
         vpk_height = 170
         vpk = vpk.resize((int(vpk.width * vpk_height / vpk.height), vpk_height), Image.LANCZOS)
-        background.paste(vpk, (width - border_margin - vpk.width - 20, border_margin + 10), vpk)
+        background.paste(vpk, (border_margin + 20, logos_y), vpk)
+        top_reserved_y = max(top_reserved_y, logos_y + vpk.height)
     except Exception:
-        pass
+        vpk = None
 
-    # Headings
+    try:
+        sbm = Image.open(sbm_path).convert('RGBA')
+        sbm_height = 170
+        sbm = sbm.resize((int(sbm.width * sbm_height / sbm.height), sbm_height), Image.LANCZOS)
+        background.paste(sbm, (width - border_margin - sbm.width - 20, logos_y), sbm)
+        top_reserved_y = max(top_reserved_y, logos_y + sbm.height)
+    except Exception:
+        sbm = None
+
     # Headings
     heading = "CERTIFICATE OF APPRECIATION"
     title = "Carbon Warrior"
     subtitle = "Awarded by WasteRewards – Clean • Recycle • Inspire"
 
-    # Heading at top-right
+    # Heading centered at the upper side, below logos
     heading_bbox = draw.textbbox((0, 0), heading, font=poppins_semibold)
     heading_w = heading_bbox[2] - heading_bbox[0]
-    draw.text((width - border_margin - heading_w - 20, border_margin + 200), heading, fill=(15, 118, 110), font=poppins_semibold)
+    heading_h = heading_bbox[3] - heading_bbox[1]
+    heading_x = (width - heading_w) // 2
+    heading_y = max(top_reserved_y + 20, border_margin + 200)
+    draw.text((heading_x, heading_y), heading, fill=(15, 118, 110), font=poppins_semibold)
 
-    # Main title centered
-    title_bbox = draw.textbbox((0, 0), title, font=poppins_bold)
+    # Main title centered, larger, neon blue with subtle glow
+    title_font = _load_ttf_font(os.path.join(assets_dir, 'Poppins-Bold.ttf'), 200) or poppins_bold
+    title_bbox = draw.textbbox((0, 0), title, font=title_font)
     title_w = title_bbox[2] - title_bbox[0]
-    draw.text(((width - title_w) // 2, border_margin + 460), title, fill=(4, 120, 87), font=poppins_bold)
+    title_h = title_bbox[3] - title_bbox[1]
+    title_x = (width - title_w) // 2
+    title_y = heading_y + heading_h + 80
 
-    # Username highlight
+    neon_blue = (0, 191, 255, 255)
+    # Glow layer
+    title_layer = Image.new('RGBA', background.size, (0, 0, 0, 0))
+    title_draw = ImageDraw.Draw(title_layer)
+    title_draw.text((title_x, title_y), title, fill=neon_blue, font=title_font)
+    glow_layer = title_layer.filter(ImageFilter.GaussianBlur(8))
+    background = Image.alpha_composite(background, glow_layer)
+    # Recreate drawing context after compositing
+    draw = ImageDraw.Draw(background)
+    # Crisp foreground text
+    try:
+        draw.text((title_x, title_y), title, fill=neon_blue, font=title_font, stroke_width=2, stroke_fill=(255, 255, 255, 180))
+    except Exception:
+        draw.text((title_x, title_y), title, fill=neon_blue, font=title_font)
+
+    # Username (larger, cleaner, no background band)
     username_display = username.strip() or "Participant"
-    # Recipient name in an oversized, stylized rendering
-    name_font = _load_ttf_font(os.path.join(assets_dir, 'Poppins-Bold.ttf'), 140) or poppins_semibold
+    name_font = _load_ttf_font(os.path.join(assets_dir, 'Poppins-Bold.ttf'), 170) or poppins_semibold
     name_bbox = draw.textbbox((0, 0), username_display, font=name_font)
     name_w = name_bbox[2] - name_bbox[0]
+    name_h = name_bbox[3] - name_bbox[1]
     name_x = (width - name_w) // 2
-    name_y = border_margin + 660
-    # Underline band
-    band_padding_x = 40
-    band_padding_y = 24
-    draw.rounded_rectangle(
-        [name_x - band_padding_x, name_y - band_padding_y, name_x + name_w + band_padding_x, name_y + (name_bbox[3]-name_bbox[1]) + band_padding_y],
-        radius=24,
-        fill=(167, 243, 208, 90),
-        outline=(16, 185, 129, 220),
-        width=6,
-    )
-    # Text with subtle shadow for a "special" flair
+    name_y = title_y + title_h + 100
+    # Text with subtle shadow for clarity
     try:
-        draw.text((name_x+2, name_y+2), username_display, fill=(22, 101, 52), font=name_font)
+        draw.text((name_x+2, name_y+2), username_display, fill=(23, 37, 84), font=name_font)
         draw.text((name_x, name_y), username_display, fill=(5, 150, 105), font=name_font, stroke_width=1, stroke_fill=(209, 250, 229))
     except Exception:
-        # Pillow without stroke support
-        draw.text((name_x+2, name_y+2), username_display, fill=(22, 101, 52), font=name_font)
+        draw.text((name_x+2, name_y+2), username_display, fill=(23, 37, 84), font=name_font)
         draw.text((name_x, name_y), username_display, fill=(5, 150, 105), font=name_font)
 
     # Citation paragraph
@@ -1467,6 +1480,7 @@ def generate_carbon_warrior_certificate(username: str, meta: Optional[Dict[str, 
         "responsible disposal, and community cleanliness across campus and city.",
         "Your actions advance the Swachh Bharat Mission and inspire others to act.",
     ]
+    # Ensure adequate spacing below name
     para_y = name_y + 200
     for i, line in enumerate(para_lines):
         bbox = draw.textbbox((0, 0), line, font=poppins_regular)
