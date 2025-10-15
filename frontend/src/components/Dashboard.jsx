@@ -165,6 +165,10 @@ const FriendsPanel = () => {
   const [dmWith, setDmWith] = useState('');
   const [messages, setMessages] = useState([]);
   const [text, setText] = useState('');
+  // Clean-buddy state
+  const [botOpen, setBotOpen] = useState(false);
+  const [botMsgs, setBotMsgs] = useState([]);
+  const [botText, setBotText] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const load = async () => {
@@ -185,7 +189,7 @@ const FriendsPanel = () => {
     try {
       const r = await fetch(apiUrl('/api/friends/add'), { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ username: u }) });
       const d = await r.json();
-      if (!r.ok) { setError(d?.error||'Failed'); } else { setAddUsername(''); await load(); }
+      if (!r.ok) { setError(d?.error||'Failed'); } else { setAddUsername(''); await load(); window.dispatchEvent(new CustomEvent('openUserPeek',{ detail: { username: u } })); }
     } catch { setError('Network error.'); } finally { setLoading(false); }
   };
   const decide = async (u, decision) => {
@@ -199,6 +203,29 @@ const FriendsPanel = () => {
     const body = (text||'').trim(); if (!body || !dmWith) return;
     setLoading(true);
     try { const r = await fetch(apiUrl('/api/dm'), { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ to: dmWith, message: body }) }); const d = await r.json(); if (r.ok) { setMessages((m)=>[...m, d.message]); setText(''); } else setError(d?.error||'Failed'); } catch { setError('Network error.'); } finally { setLoading(false); }
+  };
+
+  const openBot = async () => {
+    setBotOpen(true); setDmWith(''); setMessages([]);
+    try {
+      const r = await fetch(apiUrl('/api/clean_buddy'), { headers: { Authorization: `Bearer ${token}` } });
+      const d = await r.json();
+      if (r.ok) setBotMsgs(d.messages || []);
+    } catch {/* noop */}
+  };
+
+  const sendBot = async () => {
+    const body = (botText||'').trim(); if (!body) return;
+    try {
+      const r = await fetch(apiUrl('/api/clean_buddy'), { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ message: body }) });
+      const d = await r.json();
+      if (r.ok) {
+        // Optimistically show user message then bot reply
+        const now = new Date().toISOString().slice(0,19).replace('T',' ');
+        setBotMsgs((m)=>[...m, { id: `u_${Date.now()}`, sender_username: 'you', message: body, created_at: now }, d.message]);
+        setBotText('');
+      }
+    } catch {/* noop */}
   };
   return (
     <div className="grid gap-4 md:grid-cols-[1.1fr_1.2fr]">
@@ -214,7 +241,14 @@ const FriendsPanel = () => {
             <div className="text-gray-300 text-sm mb-1">Your friends</div>
             <div className="space-y-2 max-h-48 overflow-auto pr-1">
               {friends.map(f => (
-                <button key={f.username} onClick={()=>loadDm(f.username)} className="w-full text-left p-2 rounded bg-white/5 border border-white/10 hover:bg-white/10 text-gray-100 text-sm">@{f.username}</button>
+                <div key={f.username} className="p-2 rounded bg-white/5 border border-white/10 flex items-center justify-between">
+                  <button
+                    onClick={()=>window.dispatchEvent(new CustomEvent('openUserPeek',{ detail: { username: f.username } }))}
+                    className="text-left text-gray-100 text-sm hover:underline"
+                    title="View profile"
+                  >@{f.username}</button>
+                  <button onClick={()=>loadDm(f.username)} className="px-2 py-1 text-xs rounded bg-eco-green/20 text-eco-green border border-eco-green/30">Chat</button>
+                </div>
               ))}
               {friends.length===0 && <div className="text-gray-400 text-xs">No friends yet.</div>}
             </div>
@@ -240,10 +274,14 @@ const FriendsPanel = () => {
         </div>
       </div>
       <div className="rounded-xl bg-white/5 border border-white/10 p-4">
-        <div className="text-gray-100 text-lg font-semibold mb-2">Direct Messages</div>
-        {!dmWith ? (
-          <div className="text-gray-400 text-sm">Select a friend to chat.</div>
-        ) : (
+        <div className="flex items-center justify-between mb-2">
+          <div className="text-gray-100 text-lg font-semibold">Direct Messages</div>
+          <button onClick={openBot} className="text-xs px-2 py-1 rounded bg-eco-accent text-eco-dark">Chat with Clean-buddy</button>
+        </div>
+        {!dmWith && !botOpen && (
+          <div className="text-gray-400 text-sm">Select a friend or open Clean-buddy.</div>
+        )}
+        {dmWith && !botOpen && (
           <div className="flex flex-col h-80">
             <div className="flex items-center justify-between mb-2">
               <div className="text-gray-300 text-sm">Chatting with @{dmWith}</div>
@@ -264,6 +302,70 @@ const FriendsPanel = () => {
               <input type="text" value={text} onChange={(e)=>setText(e.target.value)} placeholder="Type a message…" className="flex-1 px-3 py-2 rounded bg-black/40 border border-white/10 text-gray-100" />
               <button onClick={sendDm} disabled={!text.trim()||loading} className={`px-3 py-2 rounded text-sm font-semibold ${(!text.trim()||loading)?'bg-gray-500/40 text-gray-300':'bg-eco-green text-eco-dark'}`}>Send</button>
             </div>
+          </div>
+        )}
+        {botOpen && (
+          <div className="flex flex-col h-80">
+            <div className="flex items-center justify-between mb-2">
+              <div className="text-gray-300 text-sm">Chatting with Clean-buddy</div>
+              <button onClick={openBot} className="text-xs text-gray-300 hover:text-white">Refresh</button>
+            </div>
+            <div className="flex-1 overflow-auto space-y-2 pr-1">
+              {botMsgs.map(m => (
+                <div key={m.id} className="flex items-start gap-2">
+                  <div className="flex-1">
+                    <div className="text-xs text-gray-400"><span className="text-gray-200 font-semibold">@{m.sender_username}</span> <span className="ml-2 text-[10px] opacity-70">{new Date((m.created_at||'').replace(' ','T')+'Z').toLocaleString()}</span></div>
+                    <div className="text-sm text-gray-100 whitespace-pre-wrap">{m.message}</div>
+                  </div>
+                </div>
+              ))}
+              {botMsgs.length===0 && <div className="text-xs text-gray-400">No messages yet.</div>}
+            </div>
+            <div className="mt-2 flex items-center gap-2">
+              <input type="text" value={botText} onChange={(e)=>setBotText(e.target.value)} placeholder="Ask Clean-buddy about waste…" className="flex-1 px-3 py-2 rounded bg-black/40 border border-white/10 text-gray-100" />
+              <button onClick={sendBot} disabled={!botText.trim()} className={`px-3 py-2 rounded text-sm font-semibold ${(!botText.trim())?'bg-gray-500/40 text-gray-300':'bg-eco-green text-eco-dark'}`}>Send</button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+const UserProfilePeek = ({ username, onClose }) => {
+  const token = localStorage.getItem('authToken');
+  const [data, setData] = useState(null);
+  const [error, setError] = useState('');
+  useEffect(() => {
+    const load = async () => {
+      setError('');
+      try {
+        const res = await fetch(apiUrl(`/api/user_profile?username=${encodeURIComponent(username)}`), { headers: { Authorization: `Bearer ${token}` } });
+        const d = await res.json();
+        if (!res.ok) { setError(d?.error||'Failed to load profile'); } else { setData(d); }
+      } catch { setError('Network error.'); }
+    };
+    if (username) load();
+  }, [username]);
+  if (!username) return null;
+  return (
+    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/60">
+      <div className="w-full max-w-md rounded-xl bg-[#0b1220] border border-white/10 p-4">
+        <div className="flex items-center justify-between mb-2">
+          <div className="text-gray-100 font-semibold">@{username}</div>
+          <button onClick={onClose} className="text-sm text-gray-300 hover:text-white">✖</button>
+        </div>
+        {error && <div className="p-2 text-xs text-red-300 bg-red-500/10 border border-red-500/20 rounded mb-2">{error}</div>}
+        {!data ? (
+          <div className="text-gray-400 text-sm">Loading…</div>
+        ) : (
+          <div className="space-y-2 text-sm text-gray-200">
+            <div className="flex items-center justify-between"><span className="text-gray-400">Location</span><span>{data.location?.city}, {data.location?.state}, {data.location?.country}</span></div>
+            <div className="flex items-center justify-between"><span className="text-gray-400">Total Points</span><span className="text-eco-green font-semibold">{data.total_points}</span></div>
+            <div className="flex items-center justify-between"><span className="text-gray-400">Lifetime Points</span><span>{data.lifetime_points}</span></div>
+            <div className="flex items-center justify-between"><span className="text-gray-400">Lifetime Detections</span><span>{data.lifetime_detections}</span></div>
+            <div className="flex items-center justify-between"><span className="text-gray-400">Claimed Bounties</span><span>{data.lifetime_claimed_bounties}</span></div>
+            <div className="flex items-center justify-between"><span className="text-gray-400">Clan</span><span>{data.clan ? `${data.clan.name} (${data.clan.role})` : '—'}</span></div>
           </div>
         )}
       </div>
@@ -395,6 +497,7 @@ const Dashboard = ({ currentUser, onLogout, setCurrentUser }) => {
   const [unreadCount, setUnreadCount] = useState(0);
   const [notifOpen, setNotifOpen] = useState(false);
   const eventSourceRef = useRef(null);
+  const [peekUser, setPeekUser] = useState('');
 
   const fetchStats = async () => {
     const token = localStorage.getItem('authToken');
@@ -408,6 +511,15 @@ const Dashboard = ({ currentUser, onLogout, setCurrentUser }) => {
   };
 
   useEffect(() => { fetchStats(); }, []);
+
+  // Global listener to open UserProfilePeek from other components
+  useEffect(() => {
+    const handler = (e) => {
+      const u = e?.detail?.username; if (u) setPeekUser(u);
+    };
+    window.addEventListener('openUserPeek', handler);
+    return () => window.removeEventListener('openUserPeek', handler);
+  }, []);
 
   // Load stored notifications on login/mount
   useEffect(() => {
@@ -669,6 +781,10 @@ const Dashboard = ({ currentUser, onLogout, setCurrentUser }) => {
           {/* Lifetime Points widget removed from Rewards */}
         </section>
       </div>
+
+      {peekUser && (
+        <UserProfilePeek username={peekUser} onClose={()=>setPeekUser('')} />
+      )}
 
       <style>{`
         .animate-fade-in-up { opacity: 0; animation: fadeUp 0.55s ease-out forwards; }

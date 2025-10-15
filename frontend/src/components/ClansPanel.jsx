@@ -213,7 +213,14 @@ const ClansPanel = ({ currentUser }) => {
                 {(myClan.members||[]).map(m => (
                   <div key={m.id} className="p-2 rounded bg-white/5 border border-white/10 flex items-center justify-between">
                     <div>
-                      <span className="text-gray-100 font-medium">@{m.username}</span>
+                      <button
+                        onClick={()=>{
+                          // Emit event to open profile modal globally via CustomEvent
+                          window.dispatchEvent(new CustomEvent('openUserPeek',{ detail: { username: m.username } }));
+                        }}
+                        className="text-left text-gray-100 font-medium hover:underline"
+                        title="View profile"
+                      >@{m.username}</button>
                       <span className="ml-2 text-gray-400 text-xs">{m.role}</span>
                       <span className="ml-2 text-eco-green text-xs">{m.total_points} pts</span>
                     </div>

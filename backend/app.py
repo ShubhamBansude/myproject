@@ -1036,6 +1036,22 @@ def init_db() -> None:
 		conn.execute('CREATE INDEX IF NOT EXISTS idx_dm_pair ON direct_messages(sender_user_id, recipient_user_id)')
 		conn.commit()
 
+		# Clean-buddy bot chat messages (per-user thread)
+		conn.execute(
+			(
+				'CREATE TABLE IF NOT EXISTS clean_buddy_messages ('
+				'  id INTEGER PRIMARY KEY AUTOINCREMENT,'
+				'  user_id INTEGER NOT NULL,'
+				'  role TEXT NOT NULL CHECK (role IN ("user", "bot")),'
+				'  message TEXT NOT NULL,'
+				'  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,'
+				'  FOREIGN KEY(user_id) REFERENCES users(id)'
+				')'
+			)
+		)
+		conn.execute('CREATE INDEX IF NOT EXISTS idx_cb_user ON clean_buddy_messages(user_id, created_at)')
+		conn.commit()
+
 		# Notifications table
 		conn.execute(
 			(
@@ -1458,6 +1474,115 @@ def notify_user(recipient_username: str, payload: Dict[str, Any]) -> None:
                 pass
     except Exception as e:
         print(f"notify_user error: {e}")
+
+
+# ======== Clean-buddy Bot ========
+def _generate_clean_buddy_reply(prompt_text: str, user_city: Optional[str] = None) -> str:
+    """Generate a concise, on-topic waste-management tip or answer.
+    Uses Gemini when available; otherwise falls back to curated tips.
+    """
+    safe_prompt = (prompt_text or '').strip()
+    domain_guard = (
+        "You are Clean-buddy, a friendly assistant that ONLY answers about waste management, recycling, garbage segregation, cleanliness drives, clean city challenges, composting, e-waste, plastic reduction, and Swachh Bharat-aligned tips."
+        " If the user asks anything off-topic, politely redirect to waste-management topics and give a relevant tip."
+        " Keep responses under 120 words. Provide specific, practical actions and, when relevant, mention city context if provided."
+    )
+    if GEMINI_AVAILABLE and genai is not None:
+        try:
+            model = genai.GenerativeModel('gemini-1.5-flash')
+            prompt = f"{domain_guard}\n\nUser message: {safe_prompt}\nCity: {user_city or 'Unknown'}\n\nAnswer:"
+            out = model.generate_content(prompt)
+            text = (out.text or '').strip()
+            if text:
+                return text
+        except Exception:
+            pass
+    # Fallback curated tips
+    tips = [
+        "Segregate waste at source: keep separate bins for wet, dry, and hazardous items.",
+        "Rinse and dry plastic, glass, and metal before putting them in recycling.",
+        "Start a simple compost bin for kitchen scraps; it reduces landfill waste and creates soil.",
+        "Carry a reusable bottle and bag to cut down single-use plastic.",
+        "E-waste (batteries, chargers, bulbs) should go to authorized collection centers only.",
+        "Organize a monthly lane clean-up with neighbors; small teams make big impact.",
+        "Label bins clearly at home and work: Paper, Plastics, Metals, Glass, E-waste, Wet.",
+        "Report illegal dumping with geotagged photos to local authorities for quick cleanup.",
+        "Reduce food waste by planning meals and storing perishables properly.",
+    ]
+    # Simple keyword branching
+    low = safe_prompt.lower()
+    if any(k in low for k in ("compost", "wet", "organic")):
+        return "For composting, collect wet waste (veg peels, tea, eggshells) in a lidded bin with dry leaves; stir weekly and keep moist—compost is ready in 6–8 weeks."
+    if any(k in low for k in ("plastic", "bottle", "poly", "bag")):
+        return "Reduce plastic: carry a cloth bag, reuse containers, and drop clean plastic at a reliable recycler; avoid thin carry bags under local norms."
+    if any(k in low for k in ("ewaste", "e-waste", "battery", "bulb", "electronics")):
+        return "Never bin e-waste. Store batteries, bulbs, and small gadgets separately and hand them over to an authorized e-waste collector."
+    if any(k in low for k in ("clean", "garbage", "litter", "street")):
+        return "Do a 15-minute daily micro-clean around your home. Use gloves, segregate collected waste, and log issues to your city app for pickup."
+    # Default random tip
+    return random.choice(tips)
+
+
+@app.route('/api/clean_buddy', methods=['GET'])
+def get_clean_buddy_chat() -> Tuple[Any, int]:
+    username = parse_username_from_auth()
+    if not username:
+        return jsonify({"error": "unauthorized"}), 401
+    limit = int(request.args.get('limit', '100'))
+    limit = max(1, min(limit, 500))
+    with get_db_connection() as conn:
+        u = conn.execute('SELECT id, city FROM users WHERE username = ?', (username,)).fetchone()
+        if u is None:
+            return jsonify({"error": "user not found"}), 404
+        uid = int(u[0])
+        rows = conn.execute(
+            'SELECT id, role, message, created_at FROM clean_buddy_messages WHERE user_id = ? ORDER BY id ASC LIMIT ?',
+            (uid, limit)
+        ).fetchall()
+        messages = []
+        for r in rows:
+            if r[1] == 'user':
+                messages.append({"id": r[0], "sender_username": username, "message": r[2], "created_at": r[3]})
+            else:
+                messages.append({"id": r[0], "sender_username": "Clean-buddy", "message": r[2], "created_at": r[3]})
+        # Ensure an initial greeting exists
+        if not rows:
+            greeting = "Hi! I’m Clean-buddy. Ask me anything about waste management, recycling, or cleanliness."
+            conn.execute('INSERT INTO clean_buddy_messages (user_id, role, message) VALUES (?, "bot", ?)', (uid, greeting))
+            conn.commit()
+            messages.append({"id": None, "sender_username": "Clean-buddy", "message": greeting, "created_at": datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')})
+    return jsonify({"messages": messages}), 200
+
+
+@app.route('/api/clean_buddy', methods=['POST'])
+def post_clean_buddy_message() -> Tuple[Any, int]:
+    username = parse_username_from_auth()
+    if not username:
+        return jsonify({"error": "unauthorized"}), 401
+    data: Dict[str, Any] = request.get_json(silent=True) or {}
+    text = (data.get('message') or '').strip()
+    if not text:
+        return jsonify({"error": "message required"}), 400
+    if len(text) > 1000:
+        return jsonify({"error": "message too long"}), 400
+    with get_db_connection() as conn:
+        u = conn.execute('SELECT id, city FROM users WHERE username = ?', (username,)).fetchone()
+        if u is None:
+            return jsonify({"error": "user not found"}), 404
+        uid, city = int(u[0]), u[1]
+        conn.execute('INSERT INTO clean_buddy_messages (user_id, role, message) VALUES (?, "user", ?)', (uid, text))
+        # Generate reply
+        reply = _generate_clean_buddy_reply(text, city)
+        conn.execute('INSERT INTO clean_buddy_messages (user_id, role, message) VALUES (?, "bot", ?)', (uid, reply))
+        msg_id = conn.execute('SELECT last_insert_rowid()').fetchone()[0]
+        conn.commit()
+    created = {
+        "id": msg_id,
+        "sender_username": "Clean-buddy",
+        "message": reply,
+        "created_at": datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S'),
+    }
+    return jsonify({"message": created}), 201
 
 
 # ======== Email OTP Helpers ========
@@ -2326,6 +2451,24 @@ def list_notifications() -> Tuple[Any, int]:
             conn.commit()
         except Exception as e:
             print(f"Backfill notifications error for {username}: {e}")
+
+        # Optional: include periodic Clean-buddy smart tip once a day
+        try:
+            uid_int = int(user_id)
+            today = datetime.utcnow().strftime('%Y-%m-%d')
+            exists_tip = conn.execute(
+                'SELECT 1 FROM notifications WHERE user_id = ? AND type = "SMART_TIP" AND DATE(created_at) = DATE(?) LIMIT 1',
+                (uid_int, today)
+            ).fetchone()
+            if exists_tip is None:
+                tip_text = _generate_clean_buddy_reply("daily tip", user_city)
+                conn.execute(
+                    'INSERT INTO notifications (user_id, type, title, message, city, payload) VALUES (?, ?, ?, ?, ?, ?)',
+                    (uid_int, 'SMART_TIP', 'Clean-buddy Tip', tip_text, user_city, json.dumps({"source": "clean-buddy"}))
+                )
+                conn.commit()
+        except Exception as _e:
+            pass
 
         rows = conn.execute(
             'SELECT id, type, title, message, city, payload, created_at, read_at FROM notifications WHERE user_id = ? ORDER BY id DESC LIMIT ?',
@@ -3390,12 +3533,19 @@ def decide_clan_join_request():
             conn.execute('UPDATE clan_join_requests SET status = "approved", resolved_at = CURRENT_TIMESTAMP WHERE id = ?', (request_id,))
         else:
             conn.execute('UPDATE clan_join_requests SET status = "rejected", resolved_at = CURRENT_TIMESTAMP WHERE id = ?', (request_id,))
-        conn.commit()
-        # Notify applicant
+        # Persist + notify applicant
         applicant_row = conn.execute('SELECT username FROM users WHERE id = ?', (applicant_user_id,)).fetchone()
         try:
             if applicant_row and applicant_row[0]:
-                notify_user(applicant_row[0], {
+                app_user = applicant_row[0]
+                app_id_row = conn.execute('SELECT id FROM users WHERE username = ?', (app_user,)).fetchone()
+                if app_id_row:
+                    conn.execute(
+                        'INSERT INTO notifications (user_id, type, title, message, payload) VALUES (?, ?, ?, ?, ?)',
+                        (int(app_id_row[0]), 'CLAN_JOIN_DECISION', 'Clan join request updated', f'Your request was {decision} for clan #{clan_id}', json.dumps({"clan_id": clan_id, "decision": decision}))
+                    )
+                conn.commit()
+                notify_user(app_user, {
                     "id": None,
                     "type": "CLAN_JOIN_DECISION",
                     "title": "Clan join request updated",
@@ -3557,6 +3707,71 @@ def _normalize_pair(a_id: int, b_id: int) -> Tuple[int, int]:
     return (a_id, b_id) if a_id < b_id else (b_id, a_id)
 
 
+# ======== Public User Profile ========
+@app.route('/api/user_profile', methods=['GET'])
+def get_user_profile() -> Tuple[Any, int]:
+    """
+    Public profile for a given username.
+    Returns basic location, clan, lifetime stats.
+    """
+    target_username = (request.args.get('username') or '').strip()
+    if not target_username:
+        return jsonify({"error": "username required"}), 400
+    # Require auth but allow viewing others
+    viewer = parse_username_from_auth()
+    if not viewer:
+        return jsonify({"error": "unauthorized"}), 401
+    with get_db_connection() as conn:
+        u = conn.execute(
+            'SELECT id, username, total_points, country, state, city FROM users WHERE username = ?',
+            (target_username,)
+        ).fetchone()
+        if u is None:
+            return jsonify({"error": "user not found"}), 404
+        uid = int(u[0])
+        total_now = int(u[2])
+        # Lifetime points = current + total spent
+        spent_row = conn.execute(
+            'SELECT COALESCE(SUM(CASE WHEN points_change < 0 THEN -points_change ELSE 0 END),0) FROM transactions WHERE user_id = ?',
+            (uid,)
+        ).fetchone()
+        spent_points = int(spent_row[0]) if spent_row else 0
+        lifetime_points = total_now + spent_points
+        # Lifetime detections from reasons that represent detections
+        det_row = conn.execute(
+            'SELECT COUNT(*) FROM transactions WHERE user_id = ? AND points_change > 0 AND reason IN ("Waste Detected", "Video Disposal Verified")',
+            (uid,)
+        ).fetchone()
+        lifetime_detections = int(det_row[0]) if det_row else 0
+        # Lifetime claimed bounties
+        cb_row = conn.execute(
+            'SELECT COUNT(*) FROM waste_bounty WHERE claimed_by_user_id = ?',
+            (uid,)
+        ).fetchone()
+        lifetime_claimed_bounties = int(cb_row[0]) if cb_row else 0
+        # Clan info
+        clan_row = conn.execute(
+            'SELECT c.id, c.name, cm.role FROM clan_members cm JOIN clans c ON c.id = cm.clan_id WHERE cm.user_id = ?',
+            (uid,)
+        ).fetchone()
+        clan = None
+        if clan_row:
+            clan = {
+                "id": clan_row[0],
+                "name": clan_row[1],
+                "role": clan_row[2],
+            }
+        return jsonify({
+            "username": u[1],
+            "location": {"city": u[5], "state": u[4], "country": u[3]},
+            "total_points": total_now,
+            "lifetime_points": lifetime_points,
+            "lifetime_detections": lifetime_detections,
+            "lifetime_claimed_bounties": lifetime_claimed_bounties,
+            "clan": clan,
+        }), 200
+
+
 @app.route('/api/friends', methods=['GET'])
 def list_friends():
     username = parse_username_from_auth()
@@ -3612,9 +3827,15 @@ def add_friend():
         pair = conn.execute('SELECT id, status, requested_by_user_id FROM friends WHERE user_a_id = ? AND user_b_id = ?', (a_id, b_id)).fetchone()
         if pair is None:
             conn.execute('INSERT INTO friends (user_a_id, user_b_id, status, requested_by_user_id, updated_at) VALUES (?, ?, "pending", ?, CURRENT_TIMESTAMP)', (a_id, b_id, me_id))
-            conn.commit()
-            # notify recipient
+            # persist + notify recipient
             try:
+                you_row = conn.execute('SELECT id FROM users WHERE username = ?', (target,)).fetchone()
+                if you_row:
+                    conn.execute(
+                        'INSERT INTO notifications (user_id, type, title, message, payload) VALUES (?, ?, ?, ?, ?)',
+                        (int(you_row[0]), 'FRIEND_REQUEST', 'New friend request', f'@{username} sent you a friend request', json.dumps({"from": username}))
+                    )
+                conn.commit()
                 notify_user(target, {
                     "id": None,
                     "type": "FRIEND_REQUEST",
@@ -3633,8 +3854,14 @@ def add_friend():
         if status == 'pending' and requested_by != me_id:
             # Auto-accept if they already requested you
             conn.execute('UPDATE friends SET status = "accepted", updated_at = CURRENT_TIMESTAMP WHERE id = ?', (pair["id"],))
-            conn.commit()
             try:
+                tgt_row = conn.execute('SELECT id FROM users WHERE username = ?', (target,)).fetchone()
+                if tgt_row:
+                    conn.execute(
+                        'INSERT INTO notifications (user_id, type, title, message, payload) VALUES (?, ?, ?, ?, ?)',
+                        (int(tgt_row[0]), 'FRIEND_ACCEPTED', 'Friend request accepted', f'@{username} accepted your friend request', json.dumps({"user": username}))
+                    )
+                conn.commit()
                 notify_user(target, {
                     "id": None,
                     "type": "FRIEND_ACCEPTED",
@@ -3673,8 +3900,14 @@ def decide_friend():
             return jsonify({"status": "accepted"}), 200
         if decision == 'accept':
             conn.execute('UPDATE friends SET status = "accepted", updated_at = CURRENT_TIMESTAMP WHERE id = ?', (pair["id"],))
-            conn.commit()
             try:
+                tgt_row = conn.execute('SELECT id FROM users WHERE username = ?', (target,)).fetchone()
+                if tgt_row:
+                    conn.execute(
+                        'INSERT INTO notifications (user_id, type, title, message, payload) VALUES (?, ?, ?, ?, ?)',
+                        (int(tgt_row[0]), 'FRIEND_ACCEPTED', 'Friend request accepted', f'@{username} accepted your friend request', json.dumps({"user": username}))
+                    )
+                conn.commit()
                 notify_user(target, {
                     "id": None,
                     "type": "FRIEND_ACCEPTED",

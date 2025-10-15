@@ -596,7 +596,11 @@ const WasteBounty = ({ updatePoints, currentUser }) => {
                                                     </p>
                                                     {bounty.reporter_username && (
                                                         <p className="text-xs text-gray-400 mt-0.5">
-                                                            Raised by <span className="text-gray-200 font-medium">@{bounty.reporter_username}</span>
+                                                            Raised by <button
+                                                              onClick={() => window.dispatchEvent(new CustomEvent('openUserPeek',{ detail: { username: bounty.reporter_username } }))}
+                                                              className="text-gray-200 font-medium hover:underline"
+                                                              title="View profile"
+                                                            >@{bounty.reporter_username}</button>
                                                         </p>
                                                     )}
                                                 </div>
