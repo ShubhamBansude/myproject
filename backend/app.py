@@ -778,6 +778,94 @@ def seed_coupons(conn: Connection) -> None:
 		conn.commit()
 
 
+def ensure_curated_coupons(conn: Connection) -> None:
+    """
+    Ensure a small curated set of brand gift vouchers and discount coupons
+    exist in the `coupons` table. Idempotent via INSERT OR IGNORE.
+
+    Points costs are randomized within sensible ranges once at first insert.
+    """
+    curated: List[Dict[str, Any]] = [
+        {
+            "name": "Amazon eGift Card ₹100",
+            "code": "AMZN100",
+            "desc": "Redeemable on Amazon.in eligible items.",
+            "url": None,
+            "points": (800, 1200),
+        },
+        {
+            "name": "Amazon eGift Card ₹250",
+            "code": "AMZN250",
+            "desc": "Amazon.in eGift card (limited categories excluded).",
+            "url": None,
+            "points": (1500, 2200),
+        },
+        {
+            "name": "Flipkart Gift Card ₹200",
+            "code": "FLIP200",
+            "desc": "Flipkart eGift card — fashion, electronics, more.",
+            "url": None,
+            "points": (1200, 1800),
+        },
+        {
+            "name": "Myntra Gift Card ₹300",
+            "code": "MYNTRA300",
+            "desc": "Style more with Myntra eGift card.",
+            "url": None,
+            "points": (1600, 2300),
+        },
+        {
+            "name": "Swiggy 20% OFF (max ₹100)",
+            "code": "FOOD20",
+            "desc": "Valid on select restaurants and orders above minimum.",
+            "url": None,
+            "points": (500, 900),
+        },
+        {
+            "name": "Zomato ₹75 OFF Coupon",
+            "code": "ZOMATO75",
+            "desc": "Applicable on eligible orders above minimum value.",
+            "url": None,
+            "points": (400, 800),
+        },
+        {
+            "name": "Starbucks ₹100 OFF",
+            "code": "STAR100",
+            "desc": "Enjoy a discount at participating Starbucks stores.",
+            "url": None,
+            "points": (800, 1200),
+        },
+        {
+            "name": "Eco-Store 15% OFF",
+            "code": "ECO15",
+            "desc": "15% off on sustainable products at partner eco-stores.",
+            "url": None,
+            "points": (600, 1000),
+        },
+    ]
+
+    for item in curated:
+        try:
+            low, high = item["points"]
+            points_cost = random.randint(int(low), int(high))
+            conn.execute(
+                'INSERT OR IGNORE INTO coupons (name, points_cost, coupon_code, description, is_active, external_url, source) '
+                'VALUES (?, ?, ?, ?, 1, ?, ?)',
+                (
+                    item["name"],
+                    points_cost,
+                    item["code"],
+                    item["desc"],
+                    item["url"],
+                    'Curated',
+                ),
+            )
+        except Exception:
+            # Ignore individual failures to allow the rest to be inserted
+            continue
+    conn.commit()
+
+
 def init_db() -> None:
 	with get_db_connection() as conn:
 		# Create users table with new schema
@@ -2028,15 +2116,14 @@ def list_coupons() -> Tuple[Any, int]:
     username = parse_username_from_auth()
     if not username:
         return jsonify({"error": "unauthorized"}), 401
-    # Only expose GrabOn-sourced coupons and a curated set of manual GrabOn codes
-    allowed_manual_codes = ('GRABON500', 'GRAB200', 'GRABLEAF350')
     with get_db_connection() as conn:
+        # Ensure curated coupons are available
+        ensure_curated_coupons(conn)
         rows = conn.execute(
             'SELECT id, name, points_cost, coupon_code, description, external_url, source '
             'FROM coupons '
-            'WHERE is_active = 1 AND (source = "GrabOn" OR coupon_code IN (?,?,?)) '
-            'ORDER BY points_cost ASC',
-            allowed_manual_codes,
+            'WHERE is_active = 1 '
+            'ORDER BY points_cost ASC'
         ).fetchall()
         coupons = [
             {
