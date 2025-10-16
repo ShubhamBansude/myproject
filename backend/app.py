@@ -5824,6 +5824,11 @@ def delete_direct_message(message_id: int):
         conn.commit()
         return jsonify({"status": "deleted"}), 200
 
+@app.route('/health')
+def health_check():
+    """Health check endpoint for Render"""
+    return jsonify({"status": "healthy", "service": "waste-detection-backend"}), 200
+
 if __name__ == '__main__':
     init_db()
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
