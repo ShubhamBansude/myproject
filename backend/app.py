@@ -3235,7 +3235,7 @@ def create_bounty() -> Tuple[Any, int]:
 			(user_id, latitude, longitude, user_country, user_state, user_city, f"/uploads/{image_filename}")
 		)
 		bounty_id = cur.lastrowid
-        # Award reporter for raising bounty
+		# Award reporter for raising bounty
 		try:
 			# Fetch current points
 			u = conn.execute('SELECT total_points FROM users WHERE id = ?', (user_id,)).fetchone()
@@ -3246,11 +3246,11 @@ def create_bounty() -> Tuple[Any, int]:
 				'INSERT INTO transactions (user_id, points_change, reason) VALUES (?, ?, ?)',
 				(user_id, BOUNTY_REPORTER_REWARD, f'Bounty Reported - Bounty #{bounty_id}')
 			)
-            # Auto-verify mission progress for bounty report events
-            try:
-                _increment_missions_for_event(conn, user_id, event='bounty_report', increment=1, category=None)
-            except Exception:
-                pass
+			# Auto-verify mission progress for bounty report events
+			try:
+				_increment_missions_for_event(conn, user_id, event='bounty_report', increment=1, category=None)
+			except Exception:
+				pass
 		except Exception:
 			# Non-fatal failure; continue even if reward could not be applied
 			pass
