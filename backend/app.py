@@ -4679,7 +4679,18 @@ def get_stats() -> Tuple[Any, int]:
 		spent_row = conn.execute('SELECT COALESCE(SUM(CASE WHEN points_change < 0 THEN -points_change ELSE 0 END),0) FROM transactions WHERE user_id = ?', (uid,)).fetchone()
 		spent = int(spent_row[0]) if spent_row else 0
 		lifetime_points = total_now + spent
-	return jsonify({"detections": detections, "redemptions": redemptions, "lifetime_points": lifetime_points}), 200
+        # Waste Bounty stats
+        br_row = conn.execute('SELECT COUNT(*) FROM waste_bounty WHERE reporter_user_id = ?', (uid,)).fetchone()
+        bc_row = conn.execute('SELECT COUNT(*) FROM waste_bounty WHERE claimed_by_user_id = ?', (uid,)).fetchone()
+        bounties_raised = int(br_row[0]) if br_row else 0
+        bounties_claimed = int(bc_row[0]) if bc_row else 0
+    return jsonify({
+        "detections": detections,
+        "redemptions": redemptions,
+        "lifetime_points": lifetime_points,
+        "bounties_raised": bounties_raised,
+        "bounties_claimed": bounties_claimed,
+    }), 200
 
 
 @app.route('/api/streak', methods=['GET'])
