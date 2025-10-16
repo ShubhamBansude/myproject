@@ -58,6 +58,15 @@
 
 /* Optionally additional CSS or overrides */
 
+/* Respect reduced motion preference for accessibility & performance */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+}
+
 /* Shared rotating circle button decoration */
 .btn-rotating {
   position: relative;

@@ -388,7 +388,7 @@ const EarnPoints = ({ updatePoints }) => {
                     {previewUrl && (
                         <div className="w-full h-48 mb-4 rounded-lg shadow-md overflow-hidden">
                             {inputType === 'photo' ? (
-                                <img src={previewUrl} alt="Waste Preview" className="w-full h-full object-contain" />
+                                <img src={previewUrl} alt="Waste Preview" className="w-full h-full object-contain" loading="lazy" decoding="async" />
                             ) : (
                                 <video 
                                     src={previewUrl} 

@@ -103,8 +103,8 @@ const RewardsShop = ({ onRedeem }) => {
             <div className="absolute -bottom-8 -left-8 w-48 h-48 bg-amber-400/20 rounded-full blur-2xl" />
           </div>
           <div className="flex items-center gap-3">
-            <img src="/swachh-bharat.svg" alt="Swachh Bharat" className="h-8 w-auto" />
-            <img src="/vpkbiet-logo.png" alt="VPKBIET" className="h-8 w-auto ml-1 opacity-90" />
+            <img src="/swachh-bharat.svg" alt="Swachh Bharat" className="h-8 w-auto" loading="lazy" decoding="async" />
+            <img src="/vpkbiet-logo.png" alt="VPKBIET" className="h-8 w-auto ml-1 opacity-90" loading="lazy" decoding="async" />
             <div>
               <div className="text-lg font-semibold text-gray-100">Carbon Warrior Certificate</div>
               <div className="text-sm text-gray-300">Personalized certificate with your username</div>
@@ -143,7 +143,7 @@ const RewardsShop = ({ onRedeem }) => {
                 <a href={`${API_BASE_URL}${certUrl.replace('/certificates/', '/certificates/download/')}`} download className="px-3 py-2 rounded-md bg-eco-green text-eco-dark text-sm hover:brightness-110">Download</a>
               </div>
               <div className="mt-3 h-48 bg-white/5 border border-white/10 rounded-md overflow-hidden">
-                <iframe title="certificate" src={`${API_BASE_URL}${certUrl}`} className="w-full h-full"></iframe>
+                <iframe title="certificate" src={`${API_BASE_URL}${certUrl}`} className="w-full h-full" loading="lazy" referrerPolicy="no-referrer"></iframe>
               </div>
             </div>
           )}
@@ -852,7 +852,7 @@ const Dashboard = ({ currentUser, onLogout, setCurrentUser }) => {
       <header className="sticky top-0 z-20 backdrop-blur bg-[#0b1220]/70 border-b border-white/10">
         <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <img src="/swachh-bharat.svg" alt="Swachh Bharat" className="h-6 w-auto opacity-90" />
+            <img src="/swachh-bharat.svg" alt="Swachh Bharat" className="h-6 w-auto opacity-90" decoding="async" />
             <div className="flex items-center gap-1">
               <span className="text-white font-extrabold text-xl font-display">Waste</span>
               <span className="text-eco-green font-extrabold text-xl font-display">Rewards</span>
@@ -1068,7 +1068,7 @@ const Dashboard = ({ currentUser, onLogout, setCurrentUser }) => {
             </div>
           );
         })()}
-            <div className="mt-4 grid grid-cols-1 lg:grid-cols-3 gap-4">
+            <div className="hidden">
               {/* Missions Card */}
               <div className="rounded-2xl border border-white/10 bg-gradient-to-br from-emerald-500/10 to-white/5 p-4 relative overflow-hidden">
                 <div className="flex items-center justify-between mb-2">
