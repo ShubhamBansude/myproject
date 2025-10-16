@@ -14,6 +14,7 @@ const EarnPoints = ({ updatePoints }) => {
     const [expandedItems, setExpandedItems] = useState(new Set());
     const [isMobile, setIsMobile] = useState(false);
     const [inputType, setInputType] = useState('photo'); // 'photo', 'video_gallery', 'video_camera'
+    const [offlineQueue, setOfflineQueue] = useState([]);
 
     // Mobile device detection
     useEffect(() => {
@@ -179,12 +180,57 @@ const EarnPoints = ({ updatePoints }) => {
             if (typeof data.total_points === 'number') {
                 updatePoints(data.total_points);
             }
-        } catch {
-            setError('Network error. Please try again.');
+        } catch (e) {
+            if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+                try {
+                    const reader = new FileReader();
+                    reader.onload = () => {
+                        const b64 = reader.result;
+                        const item = { file_b64: b64, filename: file.name || 'upload.jpg', ts: Date.now() };
+                        const prior = JSON.parse(localStorage.getItem('offlineQueue') || '[]');
+                        const next = [...prior, item];
+                        localStorage.setItem('offlineQueue', JSON.stringify(next));
+                        setOfflineQueue(next);
+                        setError(null);
+                        alert('Waiting for network… item added to offline queue.');
+                    };
+                    reader.readAsDataURL(file);
+                } catch {
+                    setError('Offline and failed to queue upload.');
+                }
+            } else {
+                setError('Network error. Please try again.');
+            }
         } finally {
             setLoading(false);
         }
     };
+
+    // Auto-upload queued items when online
+    useEffect(() => {
+        const sync = async () => {
+            try {
+                const token = localStorage.getItem('authToken');
+                const queued = JSON.parse(localStorage.getItem('offlineQueue') || '[]');
+                if (!queued.length) return;
+                const res = await fetch(apiUrl('/api/upload/offline-sync'), {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                    body: JSON.stringify({ items: queued })
+                });
+                const data = await res.json();
+                if (res.ok) {
+                    localStorage.setItem('offlineQueue', JSON.stringify([]));
+                    setOfflineQueue([]);
+                    alert('Upload completed successfully!');
+                }
+            } catch { /* noop */ }
+        };
+        const onOnline = () => { sync(); };
+        window.addEventListener('online', onOnline);
+        sync();
+        return () => window.removeEventListener('online', onOnline);
+    }, []);
 
     const isSuccess = detectionResult && detectionResult.awarded_points > 0;
     const isDetected = detectionResult && (

@@ -17,6 +17,9 @@ import queue
 from collections import defaultdict
 import smtplib
 from email.message import EmailMessage
+import threading
+import threading
+
 
 # Image processing
 import cv2
@@ -1243,6 +1246,82 @@ def init_db() -> None:
 		conn.execute('CREATE INDEX IF NOT EXISTS idx_email_otps_email_purpose ON email_otps(email, purpose)')
 		conn.commit()
 
+		# Missions tables (daily/weekly eco missions)
+		conn.execute(
+			(
+				'CREATE TABLE IF NOT EXISTS missions ('
+				'  id INTEGER PRIMARY KEY AUTOINCREMENT,'
+				'  title TEXT NOT NULL,'
+				'  description TEXT,'
+				'  goal_type TEXT NOT NULL,'
+				'  points INTEGER NOT NULL DEFAULT 20,'
+				'  expiry_date DATE NOT NULL'
+				')'
+			)
+		)
+		conn.execute(
+			(
+				'CREATE TABLE IF NOT EXISTS mission_progress ('
+				'  user_id INTEGER NOT NULL,'
+				'  mission_id INTEGER NOT NULL,'
+				'  status TEXT NOT NULL DEFAULT "pending",'
+				'  progress INTEGER NOT NULL DEFAULT 0,'
+				'  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,'
+				'  PRIMARY KEY (user_id, mission_id),'
+				'  FOREIGN KEY(user_id) REFERENCES users(id),'
+				'  FOREIGN KEY(mission_id) REFERENCES missions(id)'
+				')'
+			)
+		)
+		conn.commit()
+
+		# Streaks table (eco-streak calendar)
+		conn.execute(
+			(
+				'CREATE TABLE IF NOT EXISTS streaks ('
+				'  user_id INTEGER PRIMARY KEY,'
+				'  current_streak INTEGER NOT NULL DEFAULT 0,'
+				'  best_streak INTEGER NOT NULL DEFAULT 0,'
+				'  last_active_date DATE'
+				')'
+			)
+		)
+		conn.commit()
+
+		# Moderation table (AI-powered moderation queue)
+		conn.execute(
+			(
+				'CREATE TABLE IF NOT EXISTS moderation ('
+				'  id INTEGER PRIMARY KEY AUTOINCREMENT,'
+				'  user_id INTEGER NOT NULL,'
+				'  file_path TEXT,'
+				'  status TEXT NOT NULL DEFAULT "pending_review",'
+				'  reason TEXT,'
+				'  pending_points INTEGER NOT NULL DEFAULT 0,'
+				'  reviewed_at DATETIME,'
+				'  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,'
+				'  FOREIGN KEY(user_id) REFERENCES users(id)'
+				')'
+			)
+		)
+		conn.commit()
+
+		# Carbon events table (stores estimated CO2 savings per action)
+		conn.execute(
+			(
+				'CREATE TABLE IF NOT EXISTS carbon_events ('
+				'  id INTEGER PRIMARY KEY AUTOINCREMENT,'
+				'  user_id INTEGER NOT NULL,'
+				'  category TEXT NOT NULL,'
+				'  amount_kg REAL NOT NULL,'
+				'  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,'
+				'  FOREIGN KEY(user_id) REFERENCES users(id)'
+				')'
+			)
+		)
+		conn.execute('CREATE INDEX IF NOT EXISTS idx_carbon_events_user_date ON carbon_events(user_id, created_at)')
+		conn.commit()
+
 
 # Ensure database schema exists even when app is imported via WSGI
 try:
@@ -1286,6 +1365,131 @@ def download_certificate(filename: str):
 # Maps username -> set of Queue instances
 notification_subscribers: Dict[str, Set[queue.Queue]] = defaultdict(set)
 
+# -----------------------------
+# Background scheduler (missions rotation)
+# -----------------------------
+_scheduler_lock = threading.Lock()
+_last_mission_rotation_check = 0.0
+
+def _rotate_daily_weekly_missions() -> None:
+    """Ensure there is an active daily and weekly mission. Creates new ones on expiry."""
+    try:
+        with get_db_connection() as conn:
+            now = datetime.utcnow()
+            today = now.date()
+
+            # Expire old missions
+            conn.execute('DELETE FROM missions WHERE DATE(expiry_date) < DATE(?)', (today.isoformat(),))
+
+            # Check if a daily mission exists for today
+            row = conn.execute('SELECT id FROM missions WHERE goal_type = ? AND DATE(expiry_date) = DATE(?)', ('daily', today.isoformat())).fetchone()
+            if row is None:
+                daily_templates = [
+                    ('Recycle 3 plastic bottles today', 'Snap and upload for bonus.', 'daily', 25),
+                    ('Pick up 5 pieces of litter', 'Dispose responsibly.', 'daily', 25),
+                    ('Upload one cleanup photo', 'Keep it safe and real.', 'daily', 20),
+                ]
+                title, desc, gtype, pts = random.choice(daily_templates)
+                conn.execute(
+                    'INSERT INTO missions (title, description, goal_type, points, expiry_date) VALUES (?, ?, ?, ?, ?)',
+                    (title, desc, gtype, pts, (today + timedelta(days=1)).isoformat())
+                )
+
+            # Ensure a valid weekly mission (7-day horizon)
+            week_row = conn.execute('SELECT id FROM missions WHERE goal_type = ? AND DATE(expiry_date) >= DATE(?) ORDER BY expiry_date ASC LIMIT 1', ('weekly', today.isoformat())).fetchone()
+            if week_row is None:
+                weekly_templates = [
+                    ('Upload one verified cleanup bounty this week', 'Complete or verify a cleanup bounty.', 'weekly', 60),
+                    ('Recycle 10 items this week', 'Multiple uploads allowed.', 'weekly', 50),
+                ]
+                title, desc, gtype, pts = random.choice(weekly_templates)
+                conn.execute(
+                    'INSERT INTO missions (title, description, goal_type, points, expiry_date) VALUES (?, ?, ?, ?, ?)',
+                    (title, desc, gtype, pts, (today + timedelta(days=7)).isoformat())
+                )
+            conn.commit()
+    except Exception as e:
+        print(f"Mission rotation error: {e}")
+
+def _scheduler_loop() -> None:
+    global _last_mission_rotation_check
+    while True:
+        try:
+            now = time.time()
+            if now - _last_mission_rotation_check > 1800:  # at most once each 30 minutes
+                with _scheduler_lock:
+                    _rotate_daily_weekly_missions()
+                    _last_mission_rotation_check = now
+        except Exception as e:
+            print(f"Scheduler loop error: {e}")
+        time.sleep(300)  # sleep 5 minutes
+
+_scheduler_thread = threading.Thread(target=_scheduler_loop, daemon=True)
+_scheduler_thread.start()
+
+# Simple background scheduler using a daemon thread that runs every hour
+_scheduler_lock = threading.Lock()
+_last_mission_rotation_check = 0.0
+
+def _rotate_daily_weekly_missions() -> None:
+    """Ensure there is an active daily and weekly mission. Creates new ones on expiry."""
+    try:
+        with get_db_connection() as conn:
+            now = datetime.utcnow()
+            today = now.date()
+
+            # Expire old missions
+            conn.execute('DELETE FROM missions WHERE DATE(expiry_date) < DATE(?)', (today.isoformat(),))
+
+            # Check if a daily mission exists for today
+            row = conn.execute('SELECT id FROM missions WHERE goal_type = ? AND DATE(expiry_date) = DATE(?)', ('daily', today.isoformat())).fetchone()
+            if row is None:
+                # Create a simple randomized daily mission
+                daily_templates = [
+                    ('Recycle 3 plastic bottles today', 'Snap and upload for bonus.', 'daily', 25),
+                    ('Pick up 5 pieces of litter', 'Dispose responsibly.', 'daily', 25),
+                    ('Upload one cleanup photo', 'Keep it safe and real.', 'daily', 20),
+                ]
+                title, desc, gtype, pts = random.choice(daily_templates)
+                conn.execute(
+                    'INSERT INTO missions (title, description, goal_type, points, expiry_date) VALUES (?, ?, ?, ?, ?)',
+                    (title, desc, gtype, pts, (today + timedelta(days=1)).isoformat())
+                )
+
+            # Ensure a valid weekly mission ending next Monday (or 7 days ahead)
+            week_row = conn.execute('SELECT id FROM missions WHERE goal_type = ? AND DATE(expiry_date) >= DATE(?) ORDER BY expiry_date ASC LIMIT 1', ('weekly', today.isoformat())).fetchone()
+            if week_row is None:
+                weekly_templates = [
+                    ('Upload one verified cleanup bounty this week', 'Complete or verify a cleanup bounty.', 'weekly', 60),
+                    ('Recycle 10 items this week', 'Multiple uploads allowed.', 'weekly', 50),
+                ]
+                title, desc, gtype, pts = random.choice(weekly_templates)
+                conn.execute(
+                    'INSERT INTO missions (title, description, goal_type, points, expiry_date) VALUES (?, ?, ?, ?, ?)',
+                    (title, desc, gtype, pts, (today + timedelta(days=7)).isoformat())
+                )
+            conn.commit()
+    except Exception as e:
+        print(f"Mission rotation error: {e}")
+
+def _scheduler_loop() -> None:
+    global _last_mission_rotation_check
+    while True:
+        try:
+            now = time.time()
+            # Run rotation at most once every 30 minutes
+            if now - _last_mission_rotation_check > 1800:
+                with _scheduler_lock:
+                    _rotate_daily_weekly_missions()
+                    _last_mission_rotation_check = now
+        except Exception as e:
+            print(f"Scheduler loop error: {e}")
+        time.sleep(300)  # sleep 5 minutes between checks
+
+# Start scheduler thread
+_scheduler_thread = threading.Thread(target=_scheduler_loop, daemon=True)
+_scheduler_thread.start()
+
 
 def parse_username_from_auth() -> Optional[str]:
 	auth_header = request.headers.get('Authorization', '')
@@ -1303,6 +1507,15 @@ def parse_username_from_token_param() -> Optional[str]:
     if not token.startswith('token_'):
         return None
     return token.replace('token_', '', 1)
+
+
+def _get_user_row(conn: Connection, username: str) -> Optional[sqlite3.Row]:
+    return conn.execute('SELECT id, username, total_points FROM users WHERE username = ?', (username,)).fetchone()
+
+
+def _award_points(conn: Connection, user_id: int, points: int, reason: str) -> None:
+    conn.execute('UPDATE users SET total_points = total_points + ? WHERE id = ?', (points, user_id))
+    conn.execute('INSERT INTO transactions (user_id, points_change, reason) VALUES (?, ?, ?)', (user_id, points, reason))
 
 
 def _ensure_backend_dirs() -> None:
@@ -1694,6 +1907,130 @@ def notify_user(recipient_username: str, payload: Dict[str, Any]) -> None:
         print(f"notify_user error: {e}")
 
 
+@app.route('/api/missions/today', methods=['GET'])
+def get_today_missions():
+    username = parse_username_from_auth()
+    if not username:
+        return jsonify({"error": "missing auth token"}), 401
+    with get_db_connection() as conn:
+        # Ensure rotation has happened recently
+        try:
+            _rotate_daily_weekly_missions()
+        except Exception:
+            pass
+        today = datetime.utcnow().date().isoformat()
+        missions = []
+        for g in ('daily', 'weekly'):
+            row = conn.execute('SELECT id, title, description, goal_type, points, expiry_date FROM missions WHERE goal_type = ? AND DATE(expiry_date) >= DATE(?) ORDER BY expiry_date ASC LIMIT 1', (g, today)).fetchone()
+            if row:
+                missions.append({
+                    'id': int(row[0]),
+                    'title': row[1],
+                    'description': row[2],
+                    'goal_type': row[3],
+                    'points': int(row[4]),
+                    'expiry_date': row[5],
+                })
+        # Load progress for the user
+        u = conn.execute('SELECT id FROM users WHERE username = ?', (username,)).fetchone()
+        if not u:
+            return jsonify({"error": "user not found"}), 404
+        uid = int(u[0])
+        progress_rows = conn.execute('SELECT mission_id, status, progress, updated_at FROM mission_progress WHERE user_id = ?', (uid,)).fetchall()
+        progress_map = {int(r[0]): {"status": r[1], "progress": int(r[2]), "updated_at": r[3]} for r in progress_rows}
+        for m in missions:
+            m.update(progress_map.get(m['id'], {"status": "pending", "progress": 0, "updated_at": None}))
+        return jsonify({"missions": missions}), 200
+
+
+@app.route('/api/missions/complete', methods=['POST'])
+def complete_mission():
+    username = parse_username_from_auth()
+    if not username:
+        return jsonify({"error": "missing auth token"}), 401
+    data = request.get_json(silent=True) or {}
+    mission_id = int(data.get('mission_id') or 0)
+    if mission_id <= 0:
+        return jsonify({"error": "invalid mission_id"}), 400
+    with get_db_connection() as conn:
+        urow = conn.execute('SELECT id, total_points FROM users WHERE username = ?', (username,)).fetchone()
+        if not urow:
+            return jsonify({"error": "user not found"}), 404
+        uid, cur_points = int(urow[0]), int(urow[1])
+        m = conn.execute('SELECT id, title, goal_type, points, expiry_date FROM missions WHERE id = ?', (mission_id,)).fetchone()
+        if not m:
+            return jsonify({"error": "mission not found"}), 404
+        expiry = m[4]
+        # Prevent completing expired missions
+        if expiry and datetime.utcnow().date() > datetime.fromisoformat(str(expiry)).date():
+            return jsonify({"error": "mission expired"}), 400
+        # Upsert progress -> completed
+        conn.execute(
+            'INSERT INTO mission_progress (user_id, mission_id, status, progress, updated_at) VALUES (?, ?, "completed", 100, CURRENT_TIMESTAMP) '
+            'ON CONFLICT(user_id, mission_id) DO UPDATE SET status = "completed", progress = 100, updated_at = CURRENT_TIMESTAMP',
+            (uid, mission_id)
+        )
+        # Mission points
+        pts = int(m[3])
+        _award_points(conn, uid, pts, f"Mission completed: {m[1]}")
+
+        # Streak bonus: +10 after 3 consecutive days
+        today = datetime.utcnow().date()
+        srow = conn.execute('SELECT current_streak, best_streak, last_active_date FROM streaks WHERE user_id = ?', (uid,)).fetchone()
+        cur_streak, best_streak, last_active = 0, 0, None
+        if srow:
+            cur_streak = int(srow[0] or 0)
+            best_streak = int(srow[1] or 0)
+            last_active = srow[2]
+        if last_active:
+            last_date = datetime.fromisoformat(str(last_active)).date()
+            if last_date == today:
+                pass
+            elif last_date == today - timedelta(days=1):
+                cur_streak += 1
+            else:
+                cur_streak = 1
+        else:
+            cur_streak = 1
+        best_streak = max(best_streak, cur_streak)
+        conn.execute('INSERT INTO streaks (user_id, current_streak, best_streak, last_active_date) VALUES (?, ?, ?, ?) '
+                     'ON CONFLICT(user_id) DO UPDATE SET current_streak = ?, best_streak = ?, last_active_date = ?',
+                     (uid, cur_streak, best_streak, today.isoformat(), cur_streak, best_streak, today.isoformat()))
+
+        bonus_awarded = 0
+        if cur_streak >= 3:
+            bonus_awarded = 10
+            _award_points(conn, uid, bonus_awarded, '3-day mission streak bonus')
+
+        # Streak milestone rewards
+        milestone = None
+        if cur_streak == 7:
+            _award_points(conn, uid, 50, '7-day streak bonus')
+            milestone = '7-day'
+        elif cur_streak == 30:
+            _award_points(conn, uid, 200, '30-day streak bonus – Eco Champion')
+            milestone = '30-day'
+
+        # Return updated points
+        total_now = conn.execute('SELECT total_points FROM users WHERE id = ?', (uid,)).fetchone()[0]
+        resp = {
+            "message": "Mission Complete!",
+            "total_points": int(total_now),
+            "bonus_points": bonus_awarded,
+            "streak": {
+                "current": cur_streak,
+                "best": best_streak,
+                "milestone": milestone
+            }
+        }
+        # Optional notification
+        try:
+            notify_user(username, {"type": "MISSION_COMPLETED", "title": "Mission Complete!", "message": f"+{pts + bonus_awarded} pts"})
+        except Exception:
+            pass
+        return jsonify(resp), 200
+
+
 # ======== Clean-buddy Bot ========
 def _generate_clean_buddy_reply(
     prompt_text: str,
@@ -1818,6 +2155,85 @@ def post_clean_buddy_message() -> Tuple[Any, int]:
     return jsonify({"message": created}), 201
 
 
+# ======== Moderation & Offline Upload Sync ========
+@app.route('/api/upload/offline-sync', methods=['POST'])
+def offline_sync_uploads() -> Tuple[Any, int]:
+    """Consume a batch of queued uploads from the client when back online.
+    Body: { items: [{ file_b64, filename, category_hint }] }
+    For each item, run lightweight checks and enqueue moderation; award points after review.
+    """
+    username = parse_username_from_auth()
+    if not username:
+        return jsonify({"error": "unauthorized"}), 401
+    data = request.get_json(silent=True) or {}
+    items = data.get('items') or []
+    if not isinstance(items, list) or len(items) == 0:
+        return jsonify({"error": "no items"}), 400
+    accepted = 0
+    with get_db_connection() as conn:
+        u = conn.execute('SELECT id FROM users WHERE username = ?', (username,)).fetchone()
+        if u is None:
+            return jsonify({"error": "user not found"}), 404
+        uid = int(u[0])
+        for it in items:
+            try:
+                b64 = it.get('file_b64') or ''
+                if not b64:
+                    continue
+                # Persist to uploads dir
+                os.makedirs(_uploads_dir, exist_ok=True)
+                raw = base64.b64decode(b64.split(',')[-1])
+                fname = it.get('filename') or f"queued_{int(time.time()*1000)}.jpg"
+                safe = ''.join(ch for ch in fname if ch.isalnum() or ch in ('-', '_', '.')) or f"file_{int(time.time())}.jpg"
+                out = os.path.join(_uploads_dir, safe)
+                with open(out, 'wb') as fh:
+                    fh.write(raw)
+                # Enqueue moderation record
+                conn.execute('INSERT INTO moderation (user_id, file_path, status, reason, pending_points) VALUES (?, ?, "pending_review", NULL, 0)', (uid, safe))
+                accepted += 1
+            except Exception:
+                continue
+        conn.commit()
+    return jsonify({"accepted": accepted}), 200
+
+
+@app.route('/api/moderation/review', methods=['POST'])
+def moderation_review() -> Tuple[Any, int]:
+    """Admin endpoint to approve/reject pending uploads.
+    Body: { id, decision: 'approve'|'reject', reason? }
+    On approve, award default points and possibly carbon event.
+    """
+    # For demo, allow any logged-in user to review their own queued item
+    username = parse_username_from_auth()
+    if not username:
+        return jsonify({"error": "unauthorized"}), 401
+    data = request.get_json(silent=True) or {}
+    mod_id = int(data.get('id') or 0)
+    decision = (data.get('decision') or '').lower()
+    reason = (data.get('reason') or '').strip() or None
+    if mod_id <= 0 or decision not in ('approve', 'reject'):
+        return jsonify({"error": "invalid payload"}), 400
+    with get_db_connection() as conn:
+        m = conn.execute('SELECT id, user_id, file_path, status FROM moderation WHERE id = ?', (mod_id,)).fetchone()
+        if not m:
+            return jsonify({"error": "not found"}), 404
+        uid = int(m[1])
+        if decision == 'approve':
+            # Award modest points on approval
+            award = 20
+            _award_points(conn, uid, award, 'Upload approved')
+            conn.execute('UPDATE moderation SET status = "approved", reason = ?, reviewed_at = CURRENT_TIMESTAMP WHERE id = ?', (reason, mod_id))
+            # Carbon event heuristic (assume plastic if filename hints)
+            category = 'plastic' if 'plastic' in (m[2] or '').lower() else 'general'
+            if category != 'general':
+                # Use emission factors default mapping for plastic 0.3 kg/item
+                conn.execute('INSERT INTO carbon_events (user_id, category, amount_kg) VALUES (?, ?, ?)', (uid, category, 0.3))
+            conn.commit()
+            return jsonify({"message": "approved", "awarded_points": award}), 200
+        else:
+            conn.execute('UPDATE moderation SET status = "rejected", reason = ?, reviewed_at = CURRENT_TIMESTAMP WHERE id = ?', (reason or 'Rejected by moderator', mod_id))
+            conn.commit()
+            return jsonify({"message": "rejected"}), 200
 # ======== Email OTP Helpers ========
 def _now() -> datetime:
     return datetime.utcnow()
@@ -3965,6 +4381,78 @@ def get_stats() -> Tuple[Any, int]:
 		spent = int(spent_row[0]) if spent_row else 0
 		lifetime_points = total_now + spent
 	return jsonify({"detections": detections, "redemptions": redemptions, "lifetime_points": lifetime_points}), 200
+
+
+@app.route('/api/streak', methods=['GET'])
+def get_streak() -> Tuple[Any, int]:
+    username = parse_username_from_auth()
+    if not username:
+        return jsonify({"error": "unauthorized"}), 401
+    with get_db_connection() as conn:
+        u = conn.execute('SELECT id FROM users WHERE username = ?', (username,)).fetchone()
+        if u is None:
+            return jsonify({"error": "user not found"}), 404
+        uid = int(u[0])
+        row = conn.execute('SELECT current_streak, best_streak, last_active_date FROM streaks WHERE user_id = ?', (uid,)).fetchone()
+        if row is None:
+            return jsonify({"current_streak": 0, "best_streak": 0, "last_active_date": None, "days": []}), 200
+        # Build last 7 days calendar
+        today = datetime.utcnow().date()
+        days = []
+        for i in range(7):
+            d = today - timedelta(days=6 - i)
+            active = (str(row[2]) == d.isoformat()) if row[2] else False
+            days.append({"date": d.isoformat(), "active": active})
+        return jsonify({
+            "current_streak": int(row[0] or 0),
+            "best_streak": int(row[1] or 0),
+            "last_active_date": row[2],
+            "days": days
+        }), 200
+
+@app.route('/api/stats/carbon', methods=['GET'])
+def carbon_stats():
+    username = parse_username_from_auth()
+    if not username:
+        return jsonify({"error": "missing auth token"}), 401
+    # Load emission factors from JSON file if available; else defaults
+    factors_path = os.path.join(os.path.dirname(__file__), 'emission_factors.json')
+    default_factors = {"plastic": 0.3, "paper": 0.1, "metal": 0.7}
+    try:
+        with open(factors_path, 'r', encoding='utf-8') as fh:
+            factors = json.load(fh)
+            if not isinstance(factors, dict):
+                factors = default_factors
+    except Exception:
+        factors = default_factors
+
+    now = datetime.utcnow()
+    week_ago = now - timedelta(days=7)
+    with get_db_connection() as conn:
+        u = conn.execute('SELECT id FROM users WHERE username = ?', (username,)).fetchone()
+        if not u:
+            return jsonify({"error": "user not found"}), 404
+        uid = int(u[0])
+        rows = conn.execute('SELECT category, amount_kg FROM carbon_events WHERE user_id = ? AND created_at >= ?', (uid, week_ago.strftime('%Y-%m-%d %H:%M:%S'))).fetchall()
+        total = 0.0
+        by_cat: Dict[str, float] = defaultdict(float)
+        for r in rows:
+            cat = str(r[0]).lower()
+            amt = float(r[1])
+            total += amt
+            by_cat[cat] += amt
+        # Normalize output to known categories
+        result_sources = {
+            'plastic': round(by_cat.get('plastic', 0.0), 3),
+            'paper': round(by_cat.get('paper', 0.0), 3),
+            'metal': round(by_cat.get('metal', 0.0), 3),
+        }
+        return jsonify({
+            'week_total_kg': round(total, 3),
+            'sources': result_sources,
+            'factors': factors,
+            'planet_health': min(100, int(total * 5))
+        }), 200
 
 
 # ======== Clan System ========

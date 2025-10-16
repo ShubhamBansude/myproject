@@ -517,6 +517,13 @@ const Dashboard = ({ currentUser, onLogout, setCurrentUser }) => {
   const [notifOpen, setNotifOpen] = useState(false);
   const eventSourceRef = useRef(null);
   const [peekUser, setPeekUser] = useState('');
+  const [missions, setMissions] = useState([]);
+  const [missionLoading, setMissionLoading] = useState(false);
+  const [missionError, setMissionError] = useState('');
+  const [rewardOpen, setRewardOpen] = useState(false);
+  const [confettiBurst, setConfettiBurst] = useState(false);
+  const [carbon, setCarbon] = useState({ week_total_kg: 0, sources: { plastic: 0, paper: 0, metal: 0 }, planet_health: 0 });
+  const [streak, setStreak] = useState({ current_streak: 0, best_streak: 0, days: [] });
   const [bountyToOpen, setBountyToOpen] = useState(null);
 
   const fetchStats = async () => {
@@ -531,6 +538,68 @@ const Dashboard = ({ currentUser, onLogout, setCurrentUser }) => {
   };
 
   useEffect(() => { fetchStats(); }, []);
+
+  // Load missions
+  const loadMissions = async () => {
+    setMissionLoading(true); setMissionError('');
+    try {
+      const token = localStorage.getItem('authToken');
+      const res = await fetch(apiUrl('/api/missions/today'), { headers: { Authorization: `Bearer ${token}` } });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || 'Failed to load missions');
+      setMissions(Array.isArray(data.missions) ? data.missions : []);
+    } catch (e) {
+      setMissionError(e.message || 'Failed to load missions');
+    } finally { setMissionLoading(false); }
+  };
+  useEffect(()=>{ loadMissions(); }, []);
+
+  // Load carbon stats
+  const loadCarbon = async () => {
+    try {
+      const token = localStorage.getItem('authToken');
+      const res = await fetch(apiUrl('/api/stats/carbon'), { headers: { Authorization: `Bearer ${token}` } });
+      const data = await res.json();
+      if (res.ok) setCarbon({
+        week_total_kg: data.week_total_kg || 0,
+        sources: data.sources || { plastic: 0, paper: 0, metal: 0 },
+        planet_health: data.planet_health || 0
+      });
+    } catch {/* noop */}
+  };
+  useEffect(()=>{ loadCarbon(); }, []);
+
+  // Load streak
+  const loadStreak = async () => {
+    try {
+      const token = localStorage.getItem('authToken');
+      const res = await fetch(apiUrl('/api/streak'), { headers: { Authorization: `Bearer ${token}` } });
+      const data = await res.json();
+      if (res.ok) setStreak(data);
+    } catch {/* noop */}
+  };
+  useEffect(()=>{ loadStreak(); }, []);
+
+  const completeMission = async (missionId) => {
+    try {
+      const token = localStorage.getItem('authToken');
+      const res = await fetch(apiUrl('/api/missions/complete'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ mission_id: missionId })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || 'Failed to complete mission');
+      setRewardOpen(true); setConfettiBurst(true);
+      setTimeout(()=>setConfettiBurst(false), 1400);
+      if (typeof data.total_points === 'number') {
+        updatePoints(data.total_points);
+      }
+      await loadMissions();
+    } catch (e) {
+      alert(e.message || 'Mission failed');
+    }
+  };
 
   // Global listener to open UserProfilePeek from other components
   useEffect(() => {
@@ -835,7 +904,85 @@ const Dashboard = ({ currentUser, onLogout, setCurrentUser }) => {
             </div>
           </div>
 
-          {/* Rewards overlay removed */}
+          {/* Eco Missions + Carbon Tracker Row */}
+          <div className="mt-4 grid grid-cols-1 lg:grid-cols-3 gap-4">
+            {/* Missions Card */}
+            <div className="rounded-2xl border border-white/10 bg-gradient-to-br from-emerald-500/10 to-white/5 p-4 relative overflow-hidden">
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-gray-100 font-semibold">Daily & Weekly Eco Missions</div>
+                <button onClick={loadMissions} className="text-xs text-eco-green hover:underline">Refresh</button>
+              </div>
+              {missionLoading && <div className="text-xs text-gray-400">Loading…</div>}
+              {missionError && <div className="text-xs text-red-300 bg-red-500/10 border border-red-500/20 rounded p-2 mb-2">{missionError}</div>}
+              <div className="space-y-3">
+                {missions.map(m => (
+                  <div key={m.id} className="p-3 rounded-xl bg-white/5 border border-white/10">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <div className="text-gray-100 text-sm font-semibold">{m.title}</div>
+                        <div className="text-xs text-gray-400">{m.description || (m.goal_type==='daily'?'New challenge arrives tomorrow!':'Ends this week')}</div>
+                      </div>
+                      <span className="px-2 py-1 rounded-full bg-eco-green/20 text-eco-green border border-eco-green/30 text-xs">+{m.points} pts</span>
+                    </div>
+                    <div className="mt-2">
+                      <div className="w-full h-2 bg-white/10 rounded-full overflow-hidden">
+                        <div className="h-2 bg-eco-green rounded-full transition-all" style={{ width: `${m.progress || 0}%` }} />
+                      </div>
+                      <div className="flex items-center justify-between mt-2 text-xs text-gray-400">
+                        <span>{m.status === 'completed' ? 'Completed' : `${m.progress || 0}%`}</span>
+                        <button onClick={()=>completeMission(m.id)} disabled={m.status==='completed'} className={`px-2 py-1 rounded-md text-xs font-semibold ${m.status==='completed' ? 'bg-gray-500/30 text-gray-300 cursor-not-allowed' : 'bg-eco-green text-eco-dark'}`}>
+                          {m.status==='completed' ? 'Done' : 'Mark Done'}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+                {missions.length===0 && !missionLoading && (
+                  <div className="text-xs text-gray-400">No missions found. Check back soon.</div>
+                )}
+              </div>
+            </div>
+
+            {/* Carbon Footprint Tracker */}
+            <div className="rounded-2xl border border-white/10 bg-gradient-to-br from-emerald-500/10 to-amber-400/10 p-4">
+              <div className="text-gray-100 font-semibold mb-1">Carbon Footprint Tracker</div>
+              <div className="text-sm text-gray-300">You saved <span className="text-eco-green font-bold">{carbon.week_total_kg.toFixed(1)} kg</span> CO₂ this week!</div>
+              <div className="mt-3 grid grid-cols-3 gap-2 text-center text-xs">
+                {['plastic','paper','metal'].map((cat)=> (
+                  <div key={cat} className="p-2 rounded-lg bg-white/5 border border-white/10">
+                    <div className="text-gray-300 capitalize">{cat}</div>
+                    <div className="text-eco-green font-semibold">{(carbon.sources[cat]||0).toFixed(1)} kg</div>
+                  </div>
+                ))}
+              </div>
+              <div className="mt-3">
+                <div className="text-xs text-gray-400 mb-1">Planet Health</div>
+                <div className="w-full h-2 bg-white/10 rounded-full overflow-hidden">
+                  <div className="h-2 bg-emerald-400 rounded-full transition-all" style={{ width: `${carbon.planet_health || 0}%` }} />
+                </div>
+              </div>
+            </div>
+
+            {/* Leaderboard teaser */}
+            <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+              <div className="text-gray-100 font-semibold mb-2">Top CO₂ Savers in Your City</div>
+              <div className="text-xs text-gray-400">Check the leaderboard to see this week’s eco heroes.</div>
+              <button onClick={()=>setActiveTab('leaderboard')} className="mt-3 px-3 py-2 rounded-lg bg-eco-green text-eco-dark text-sm font-semibold">Open Leaderboard</button>
+            </div>
+            {/* Streak Calendar */}
+            <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-gray-100 font-semibold">Eco-Streak</div>
+                <div className="text-xs text-gray-400">Best: {streak.best_streak || 0}</div>
+              </div>
+              <div className="grid grid-cols-7 gap-2">
+                {(streak.days || []).map((d) => (
+                  <div key={d.date} className={`h-8 rounded-lg border flex items-center justify-center text-xs ${d.active ? 'bg-eco-green/30 border-eco-green/40 text-eco-green' : 'bg-white/5 border-white/10 text-gray-300'}`}>✓</div>
+                ))}
+              </div>
+              <div className="text-xs text-gray-400 mt-2">Current streak: <span className="text-eco-green font-semibold">{streak.current_streak || 0} days</span></div>
+            </div>
+          </div>
         </div>
 
         {/* Content card */}
@@ -858,6 +1005,33 @@ const Dashboard = ({ currentUser, onLogout, setCurrentUser }) => {
           {/* Lifetime Points widget removed from Rewards */}
         </section>
       </div>
+
+      {/* Reward Modal */}
+      {rewardOpen && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/60">
+          <div className="w-full max-w-sm rounded-2xl bg-[#0b1220] border border-white/10 p-6 text-center relative overflow-hidden">
+            <div className="absolute inset-0 pointer-events-none">
+              <div className="absolute -top-20 -right-10 w-64 h-64 bg-emerald-500/20 rounded-full blur-3xl"></div>
+              <div className="absolute -bottom-24 -left-16 w-72 h-72 bg-amber-400/20 rounded-full blur-3xl"></div>
+            </div>
+            <div className="relative">
+              <div className="text-3xl mb-2">🎉</div>
+              <div className="text-xl text-gray-100 font-bold">Mission Complete!</div>
+              <div className="text-sm text-gray-300 mt-1">New challenge arrives tomorrow!</div>
+              <button onClick={()=>setRewardOpen(false)} className="mt-4 px-4 py-2 rounded-lg bg-eco-green text-eco-dark font-semibold">Close</button>
+            </div>
+            {confettiBurst && (
+              <div className="absolute inset-0 pointer-events-none animate-ping-slow"></div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Simple confetti animation via CSS ping */}
+      <style>{`
+        .animate-ping-slow { animation: ping 1.2s cubic-bezier(0, 0, 0.2, 1) 3; background: radial-gradient(circle, rgba(16,185,129,0.3) 0%, rgba(0,0,0,0) 60%); }
+        @keyframes ping { 75%, 100% { transform: scale(2); opacity: 0; } }
+      `}</style>
 
       {peekUser && (
         <UserProfilePeek username={peekUser} onClose={()=>setPeekUser('')} />
