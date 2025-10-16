@@ -280,7 +280,7 @@ const ClansPanel = ({ currentUser }) => {
                       <div className="text-gray-100 text-sm">Bounty #{r.bounty_id} · @{r.requested_by_username}</div>
                       <div className="text-gray-400 text-xs">{r.city}{r.state?`, ${r.state}`:''} · People {r.people_strength}{r.scheduled_at?` · ${r.scheduled_at}`:''}</div>
                     </div>
-                    <img src={apiUrl(r.waste_image_url)} alt="bounty" className="w-12 h-12 rounded object-cover" />
+                    <img src={apiUrl(r.waste_image_url)} alt="bounty" className="w-12 h-12 rounded object-cover" loading="lazy" decoding="async" />
                   </div>
                   <div className="mt-2 flex items-center gap-2">
                     <button onClick={async ()=>{ try{ const res = await fetch(apiUrl('/api/clan_bounty_claims/decision'), { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ claim_id: r.id, decision: 'approve' })}); const d = await res.json(); if(res.ok){ setSuccess('Approved.'); load(); } else setError(d?.error||'Failed'); } catch{ setError('Network error.'); } }} className="px-2 py-1 rounded bg-eco-green/20 text-eco-green text-xs">Approve</button>
@@ -307,7 +307,7 @@ const ClansPanel = ({ currentUser }) => {
                       <div className="text-gray-100 text-sm">Bounty #{rb.bounty_id}</div>
                       <div className="text-gray-400 text-xs">{rb.city}{rb.state?`, ${rb.state}`:''} · {rb.people_strength ? `People ${rb.people_strength} · `: ''}{(rb.scheduled_at||rb.created_at) ? new Date(((rb.scheduled_at||rb.created_at)+'').replace('T',' ').replace(' ','T')+'Z').toLocaleString() : ''}</div>
                     </div>
-                    <img src={apiUrl(rb.waste_image_url)} alt="bounty" className="w-12 h-12 rounded object-cover" />
+                    <img src={apiUrl(rb.waste_image_url)} alt="bounty" className="w-12 h-12 rounded object-cover" loading="lazy" decoding="async" />
                   </div>
                   <div className="mt-2 flex items-center gap-2">
                     <button onClick={()=>{ window.dispatchEvent(new CustomEvent('openBountyFromLeader',{ detail:{ bountyId: rb.bounty_id } })); }} className="px-2 py-1 rounded bg-white/10 text-gray-200 text-xs">Open bounty</button>

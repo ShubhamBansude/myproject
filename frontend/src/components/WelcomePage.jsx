@@ -13,6 +13,8 @@ const WelcomePage = ({ onGetStarted }) => {
             alt="bg"
             className="w-full h-full object-cover opacity-[0.35]"
             loading="lazy"
+            decoding="async"
+            fetchpriority="low"
           />
         </picture>
         <div className="absolute inset-0 bg-gradient-to-br from-black/50 via-black/40 to-black/30" />
