@@ -579,7 +579,13 @@ const ProfileView = ({ user, setCurrentUser, lifetimePoints }) => {
 
 const Dashboard = ({ currentUser, onLogout, setCurrentUser }) => {
   const [activeTab, setActiveTab] = useState('scan');
-  const [stats, setStats] = useState({ detections: 0, redemptions: 0, lifetime_points: 0 });
+  const [stats, setStats] = useState({
+    detections: 0,
+    redemptions: 0,
+    lifetime_points: 0,
+    bounties_raised: 0,
+    bounties_claimed: 0,
+  });
   const [notifications, setNotifications] = useState([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const [notifOpen, setNotifOpen] = useState(false);
@@ -599,7 +605,13 @@ const Dashboard = ({ currentUser, onLogout, setCurrentUser }) => {
     try {
       const res = await fetch(apiUrl('/api/stats'), { headers: { Authorization: `Bearer ${token}` } });
       const data = await res.json();
-      if (res.ok) setStats({ detections: data.detections || 0, redemptions: data.redemptions || 0, lifetime_points: data.lifetime_points || 0 });
+      if (res.ok) setStats({
+        detections: data.detections || 0,
+        redemptions: data.redemptions || 0,
+        lifetime_points: data.lifetime_points || 0,
+        bounties_raised: data.bounties_raised || 0,
+        bounties_claimed: data.bounties_claimed || 0,
+      });
     } catch {
       // ignore network errors
     }
@@ -919,7 +931,9 @@ const Dashboard = ({ currentUser, onLogout, setCurrentUser }) => {
               )}
             </div>
             <span className="px-3 py-1 rounded-full bg-white/5 border border-white/10 text-gray-200">{currentUser.username}</span>
-            <span className="px-3 py-1 rounded-full bg-eco-green/20 text-eco-green border border-eco-green/30">{currentUser.total_points} pts</span>
+            {(['scan','rewards','bounty'].includes(activeTab)) && (
+              <span className="px-3 py-1 rounded-full bg-eco-green/20 text-eco-green border border-eco-green/30">{currentUser.total_points} pts</span>
+            )}
             <button onClick={onLogout} className="px-3 py-1 rounded-lg border border-red-400/40 text-red-200 hover:bg-red-900/40 transition">Logout</button>
           </div>
         </div>
@@ -946,34 +960,114 @@ const Dashboard = ({ currentUser, onLogout, setCurrentUser }) => {
           </div>
         </div>
 
-        {/* Stats strip with overlays */}
-        <div className="relative mt-6">
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <div className="rounded-xl border border-white/10 bg-white/5 p-4 relative overflow-hidden">
-              <div className="absolute inset-0 bg-gradient-to-br from-emerald-500/20 to-transparent" />
-              <div className="relative">
-                <div className="text-xs text-gray-300">Total Points</div>
-                <div className="text-2xl font-extrabold text-gray-100 mt-1">{currentUser.total_points}</div>
-              </div>
-            </div>
-            <div className="rounded-xl border border-white/10 bg-white/5 p-4 relative overflow-hidden">
-              <div className="absolute inset-0 bg-gradient-to-br from-amber-400/20 to-transparent" />
-              <div className="relative">
-                <div className="text-xs text-gray-300">Redemptions</div>
-                <div className="text-2xl font-extrabold text-gray-100 mt-1">{stats.redemptions}</div>
-              </div>
-            </div>
-            <div className="rounded-xl border border-white/10 bg-white/5 p-4 relative overflow-hidden">
-              <div className="absolute inset-0 bg-gradient-to-br from-white/10 to-transparent" />
-              <div className="relative">
-                <div className="text-xs text-gray-300">Detections</div>
-                <div className="text-2xl font-extrabold text-gray-100 mt-1">{stats.detections}</div>
-              </div>
-            </div>
-          </div>
+        {/* Stats strip with overlays - conditional by section */}
+        {(() => {
+          const cards = [];
+          if (activeTab === 'scan') {
+            cards.push({ label: 'Total Points', value: currentUser.total_points, gradient: 'from-emerald-500/20' });
+            cards.push({ label: 'Detections', value: stats.detections, gradient: 'from-white/10' });
+          } else if (activeTab === 'rewards') {
+            cards.push({ label: 'Total Points', value: currentUser.total_points, gradient: 'from-emerald-500/20' });
+            cards.push({ label: 'Redemptions', value: stats.redemptions, gradient: 'from-amber-400/20' });
+          } else if (activeTab === 'bounty') {
+            cards.push({ label: 'Total Points', value: currentUser.total_points, gradient: 'from-emerald-500/20' });
+            cards.push({ label: 'Bounties Raised', value: stats.bounties_raised, gradient: 'from-white/10' });
+            cards.push({ label: 'Bounties Claimed', value: stats.bounties_claimed, gradient: 'from-amber-400/20' });
+          }
+          const showProfileExtras = activeTab === 'profile';
+          if (cards.length === 0 && !showProfileExtras) return null;
+          return (
+            <div className="relative mt-6">
+              {cards.length > 0 && (
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                  {cards.map((c, i) => (
+                    <div key={`${c.label}_${i}`} className="rounded-xl border border-white/10 bg-white/5 p-4 relative overflow-hidden">
+                      <div className={`absolute inset-0 bg-gradient-to-br ${c.gradient} to-transparent`} />
+                      <div className="relative">
+                        <div className="text-xs text-gray-300">{c.label}</div>
+                        <div className="text-2xl font-extrabold text-gray-100 mt-1">{c.value}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
 
-          {/* Eco Missions + Carbon Tracker + Eco-Streak (Profile only) */}
-          {activeTab === 'profile' && (
+              {/* Eco Missions + Carbon Tracker + Eco-Streak (Profile only) */}
+              {showProfileExtras && (
+                <div className="mt-4 grid grid-cols-1 lg:grid-cols-3 gap-4">
+                  {/* Missions Card */}
+                  <div className="rounded-2xl border border-white/10 bg-gradient-to-br from-emerald-500/10 to-white/5 p-4 relative overflow-hidden">
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="text-gray-100 font-semibold">Daily & Weekly Eco Missions</div>
+                      <button onClick={loadMissions} className="text-xs text-eco-green hover:underline">Refresh</button>
+                    </div>
+                    {missionLoading && <div className="text-xs text-gray-400">Loading…</div>}
+                    {missionError && <div className="text-xs text-red-300 bg-red-500/10 border border-red-500/20 rounded p-2 mb-2">{missionError}</div>}
+                    <div className="space-y-3">
+                      {missions.map(m => (
+                        <div key={m.id} className="p-3 rounded-xl bg-white/5 border border-white/10">
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <div className="text-gray-100 text-sm font-semibold">{m.title}</div>
+                              <div className="text-xs text-gray-400">{m.description || (m.goal_type==='daily'?'New challenge arrives tomorrow!':'Ends this week')}</div>
+                            </div>
+                            <span className="px-2 py-1 rounded-full bg-eco-green/20 text-eco-green border border-eco-green/30 text-xs">+{m.points} pts</span>
+                          </div>
+                          <div className="mt-2">
+                            <div className="w-full h-2 bg-white/10 rounded-full overflow-hidden">
+                              <div className="h-2 bg-eco-green rounded-full transition-all" style={{ width: `${m.progress || 0}%` }} />
+                            </div>
+                            <div className="flex items-center justify-between mt-2 text-xs text-gray-400">
+                              <span>{m.status === 'completed' ? 'Completed' : `${m.progress || 0}%`}</span>
+                              <span className="px-2 py-1 rounded-md bg-white/10 border border-white/10 text-gray-300">Auto-verified</span>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                      {missions.length===0 && !missionLoading && (
+                        <div className="text-xs text-gray-400">No missions found. Check back soon.</div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Carbon Footprint Tracker */}
+                  <div className="rounded-2xl border border-white/10 bg-gradient-to-br from-emerald-500/10 to-amber-400/10 p-4">
+                    <div className="text-gray-100 font-semibold mb-1">Carbon Footprint Tracker</div>
+                    <div className="text-sm text-gray-300">You saved <span className="text-eco-green font-bold">{carbon.week_total_kg.toFixed(1)} kg</span> CO₂ this week!</div>
+                    <div className="mt-3 grid grid-cols-3 gap-2 text-center text-xs">
+                      {['plastic','paper','metal'].map((cat)=> (
+                        <div key={cat} className="p-2 rounded-lg bg-white/5 border border-white/10">
+                          <div className="text-gray-300 capitalize">{cat}</div>
+                          <div className="text-eco-green font-semibold">{(carbon.sources[cat]||0).toFixed(1)} kg</div>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="mt-3">
+                      <div className="text-xs text-gray-400 mb-1">Planet Health</div>
+                      <div className="w-full h-2 bg-white/10 rounded-full overflow-hidden">
+                        <div className="h-2 bg-emerald-400 rounded-full transition-all" style={{ width: `${carbon.planet_health || 0}%` }} />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Eco-Streak */}
+                  <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="text-gray-100 font-semibold">Eco-Streak</div>
+                      <div className="text-xs text-gray-400">Best: {streak.best_streak || 0}</div>
+                    </div>
+                    <div className="grid grid-cols-7 gap-2">
+                      {(streak.days || []).map((d) => (
+                        <div key={d.date} className={`h-8 rounded-lg border flex items-center justify-center text-xs ${d.active ? 'bg-eco-green/30 border-eco-green/40 text-eco-green' : 'bg-white/5 border-white/10 text-gray-300'}`}>✓</div>
+                      ))}
+                    </div>
+                    <div className="text-xs text-gray-400 mt-2">Current streak: <span className="text-eco-green font-semibold">{streak.current_streak || 0} days</span></div>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })()}
             <div className="mt-4 grid grid-cols-1 lg:grid-cols-3 gap-4">
               {/* Missions Card */}
               <div className="rounded-2xl border border-white/10 bg-gradient-to-br from-emerald-500/10 to-white/5 p-4 relative overflow-hidden">
