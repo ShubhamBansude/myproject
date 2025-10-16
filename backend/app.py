@@ -779,7 +779,8 @@ def categorize_gemini_items(gemini_result: Dict[str, Any]) -> Dict[str, List[Dic
 def _load_emission_factors() -> Dict[str, float]:
     """Load emission factors in kg per item for coarse categories."""
     factors_path = os.path.join(os.path.dirname(__file__), 'emission_factors.json')
-    default_factors: Dict[str, float] = {"plastic": 0.3, "paper": 0.1, "metal": 0.7}
+    # Conservatively small, realistic per-item savings estimates
+    default_factors: Dict[str, float] = {"plastic": 0.05, "paper": 0.02, "metal": 0.15}
     try:
         with open(factors_path, 'r', encoding='utf-8') as fh:
             data = json.load(fh)
@@ -1412,8 +1413,129 @@ notification_subscribers: Dict[str, Set[queue.Queue]] = defaultdict(set)
 _scheduler_lock = threading.Lock()
 _last_mission_rotation_check = 0.0
 
+
+def _ensure_mission_schema(conn: Connection) -> None:
+    """Add new mission columns if they don't exist (idempotent)."""
+    try:
+        conn.execute('ALTER TABLE missions ADD COLUMN trigger_event TEXT')
+    except Exception:
+        pass
+    try:
+        conn.execute('ALTER TABLE missions ADD COLUMN target_count INTEGER')
+    except Exception:
+        pass
+    try:
+        conn.execute('ALTER TABLE missions ADD COLUMN category_filter TEXT')
+    except Exception:
+        pass
+
+
+def _ensure_mission_progress_schema(conn: Connection) -> None:
+    """Add units_done column to mission_progress if missing (idempotent)."""
+    try:
+        conn.execute('ALTER TABLE mission_progress ADD COLUMN units_done INTEGER NOT NULL DEFAULT 0')
+    except Exception:
+        pass
+
+
+def _increment_missions_for_event(
+    conn: Connection,
+    user_id: int,
+    event: str,
+    increment: int = 1,
+    category: Optional[str] = None,
+) -> None:
+    """Increment mission progress for active missions matching the event.
+
+    - event: 'detect' | 'bounty_report' | 'cleanup_verified'
+    - category: 'plastic' | 'paper' | 'metal' | None
+    """
+    if increment <= 0:
+        return
+    today = datetime.utcnow().date().isoformat()
+    _ensure_mission_schema(conn)
+    _ensure_mission_progress_schema(conn)
+
+    # Fetch matching active missions
+    rows = conn.execute(
+        'SELECT id, points, target_count, COALESCE(category_filter, "any") AS cat '
+        'FROM missions '
+        'WHERE trigger_event = ? AND DATE(expiry_date) >= DATE(?)',
+        (event, today),
+    ).fetchall()
+
+    for r in rows:
+        mission_id = int(r[0])
+        mission_points = int(r[1] or 0)
+        target_count = int(r[2] or 1)
+        cat_filter = (str(r[3] or 'any') or 'any').lower()
+
+        # Category filter check
+        if cat_filter not in ('', 'any', None):
+            if not category or cat_filter != str(category).lower():
+                continue
+
+        pr = conn.execute(
+            'SELECT units_done, status FROM mission_progress WHERE user_id = ? AND mission_id = ?',
+            (user_id, mission_id),
+        ).fetchone()
+        prev_units = int(pr[0]) if pr else 0
+        prev_status = str(pr[1]) if pr else 'pending'
+        new_units = prev_units + int(increment)
+        completed = new_units >= max(1, target_count)
+        progress_pct = min(100, int(new_units * 100 / max(1, target_count)))
+
+        # Upsert progress
+        conn.execute(
+            'INSERT INTO mission_progress (user_id, mission_id, status, progress, units_done, updated_at) '
+            'VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP) '
+            'ON CONFLICT(user_id, mission_id) DO UPDATE SET status = excluded.status, progress = excluded.progress, units_done = excluded.units_done, updated_at = CURRENT_TIMESTAMP',
+            (user_id, mission_id, 'completed' if completed else 'in_progress', progress_pct, new_units),
+        )
+
+        # Award points and streak only once on first completion
+        if completed and prev_status != 'completed':
+            _award_points(conn, user_id, mission_points, 'Mission completed (auto)')
+
+            # Update streak similar to /api/missions/complete
+            today_dt = datetime.utcnow().date()
+            srow = conn.execute('SELECT current_streak, best_streak, last_active_date FROM streaks WHERE user_id = ?', (user_id,)).fetchone()
+            cur_streak, best_streak, last_active = 0, 0, None
+            if srow:
+                cur_streak = int(srow[0] or 0)
+                best_streak = int(srow[1] or 0)
+                last_active = srow[2]
+            if last_active:
+                last_date = datetime.fromisoformat(str(last_active)).date()
+                if last_date == today_dt:
+                    pass
+                elif last_date == today_dt - timedelta(days=1):
+                    cur_streak += 1
+                else:
+                    cur_streak = 1
+            else:
+                cur_streak = 1
+            best_streak = max(best_streak, cur_streak)
+            conn.execute(
+                'INSERT INTO streaks (user_id, current_streak, best_streak, last_active_date) VALUES (?, ?, ?, ?) '
+                'ON CONFLICT(user_id) DO UPDATE SET current_streak = ?, best_streak = ?, last_active_date = ?',
+                (user_id, cur_streak, best_streak, today_dt.isoformat(), cur_streak, best_streak, today_dt.isoformat()),
+            )
+            try:
+                # Soft bonus for 3-day streak
+                bonus_awarded = 10 if cur_streak >= 3 else 0
+                if bonus_awarded:
+                    _award_points(conn, user_id, bonus_awarded, '3-day mission streak bonus')
+                notify_user(
+                    conn.execute('SELECT username FROM users WHERE id = ?', (user_id,)).fetchone()[0],
+                    {"type": "MISSION_COMPLETED", "title": "Mission Complete!", "message": f"+{mission_points + bonus_awarded} pts"},
+                )
+            except Exception:
+                pass
+
+
 def _rotate_daily_weekly_missions() -> None:
-    """Ensure there is an active daily and weekly mission. Creates new ones on expiry."""
+    """Ensure there are multiple active daily and weekly missions with auto-verification metadata."""
     try:
         with get_db_connection() as conn:
             now = datetime.utcnow()
@@ -1422,32 +1544,61 @@ def _rotate_daily_weekly_missions() -> None:
             # Expire old missions
             conn.execute('DELETE FROM missions WHERE DATE(expiry_date) < DATE(?)', (today.isoformat(),))
 
-            # Check if a daily mission exists for today
-            row = conn.execute('SELECT id FROM missions WHERE goal_type = ? AND DATE(expiry_date) = DATE(?)', ('daily', today.isoformat())).fetchone()
-            if row is None:
-                daily_templates = [
-                    ('Recycle 3 plastic bottles today', 'Snap and upload for bonus.', 'daily', 25),
-                    ('Pick up 5 pieces of litter', 'Dispose responsibly.', 'daily', 25),
-                    ('Upload one cleanup photo', 'Keep it safe and real.', 'daily', 20),
-                ]
-                title, desc, gtype, pts = random.choice(daily_templates)
-                conn.execute(
-                    'INSERT INTO missions (title, description, goal_type, points, expiry_date) VALUES (?, ?, ?, ?, ?)',
-                    (title, desc, gtype, pts, (today + timedelta(days=1)).isoformat())
-                )
+            # Ensure schema
+            _ensure_mission_schema(conn)
 
-            # Ensure a valid weekly mission (7-day horizon)
-            week_row = conn.execute('SELECT id FROM missions WHERE goal_type = ? AND DATE(expiry_date) >= DATE(?) ORDER BY expiry_date ASC LIMIT 1', ('weekly', today.isoformat())).fetchone()
-            if week_row is None:
-                weekly_templates = [
-                    ('Upload one verified cleanup bounty this week', 'Complete or verify a cleanup bounty.', 'weekly', 60),
-                    ('Recycle 10 items this week', 'Multiple uploads allowed.', 'weekly', 50),
-                ]
-                title, desc, gtype, pts = random.choice(weekly_templates)
+            # Desired counts
+            MIN_DAILY = 3
+            MIN_WEEKLY = 2
+
+            # Templates with auto-verification rules
+            daily_templates = [
+                {"title": "Recycle 3 plastic items", "desc": "Snap and upload recyclable plastic.", "points": 25, "event": "detect", "target": 3, "cat": "plastic"},
+                {"title": "Recycle 1 metal can", "desc": "Show an aluminium/steel can.", "points": 20, "event": "detect", "target": 1, "cat": "metal"},
+                {"title": "Upload one cleanup photo", "desc": "Turn in a verified cleanup.", "points": 30, "event": "cleanup_verified", "target": 1, "cat": "any"},
+                {"title": "Report a waste bounty", "desc": "Create one public waste report.", "points": 20, "event": "bounty_report", "target": 1, "cat": "any"},
+                {"title": "Recycle 5 items", "desc": "Any recyclable items count.", "points": 25, "event": "detect", "target": 5, "cat": "any"},
+            ]
+
+            weekly_templates = [
+                {"title": "Verify one cleanup bounty", "desc": "Submit before/after cleanup.", "points": 60, "event": "cleanup_verified", "target": 1, "cat": "any"},
+                {"title": "Recycle 10 items", "desc": "Aggregate through the week.", "points": 50, "event": "detect", "target": 10, "cat": "any"},
+                {"title": "Create 2 bounties", "desc": "Report two waste hotspots.", "points": 40, "event": "bounty_report", "target": 2, "cat": "any"},
+            ]
+
+            # Seed required number of daily missions (expiry tomorrow)
+            daily_count = int(
                 conn.execute(
-                    'INSERT INTO missions (title, description, goal_type, points, expiry_date) VALUES (?, ?, ?, ?, ?)',
-                    (title, desc, gtype, pts, (today + timedelta(days=7)).isoformat())
+                    'SELECT COUNT(*) FROM missions WHERE goal_type = ? AND DATE(expiry_date) >= DATE(?)',
+                    ('daily', today.isoformat()),
+                ).fetchone()[0]
+            )
+            random.shuffle(daily_templates)
+            for t in daily_templates:
+                if daily_count >= MIN_DAILY:
+                    break
+                conn.execute(
+                    'INSERT INTO missions (title, description, goal_type, points, expiry_date, trigger_event, target_count, category_filter) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+                    (t['title'], t['desc'], 'daily', int(t['points']), (today + timedelta(days=1)).isoformat(), t['event'], int(t['target']), t['cat']),
                 )
+                daily_count += 1
+
+            # Seed required number of weekly missions (expiry 7 days ahead)
+            weekly_count = int(
+                conn.execute(
+                    'SELECT COUNT(*) FROM missions WHERE goal_type = ? AND DATE(expiry_date) >= DATE(?)',
+                    ('weekly', today.isoformat()),
+                ).fetchone()[0]
+            )
+            random.shuffle(weekly_templates)
+            for t in weekly_templates:
+                if weekly_count >= MIN_WEEKLY:
+                    break
+                conn.execute(
+                    'INSERT INTO missions (title, description, goal_type, points, expiry_date, trigger_event, target_count, category_filter) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+                    (t['title'], t['desc'], 'weekly', int(t['points']), (today + timedelta(days=7)).isoformat(), t['event'], int(t['target']), t['cat']),
+                )
+                weekly_count += 1
             conn.commit()
     except Exception as e:
         print(f"Mission rotation error: {e}")
@@ -1468,50 +1619,10 @@ def _scheduler_loop() -> None:
 _scheduler_thread = threading.Thread(target=_scheduler_loop, daemon=True)
 _scheduler_thread.start()
 
-# Simple background scheduler using a daemon thread that runs every hour
-_scheduler_lock = threading.Lock()
-_last_mission_rotation_check = 0.0
-
-def _rotate_daily_weekly_missions() -> None:
-    """Ensure there is an active daily and weekly mission. Creates new ones on expiry."""
-    try:
-        with get_db_connection() as conn:
-            now = datetime.utcnow()
-            today = now.date()
-
-            # Expire old missions
-            conn.execute('DELETE FROM missions WHERE DATE(expiry_date) < DATE(?)', (today.isoformat(),))
-
-            # Check if a daily mission exists for today
-            row = conn.execute('SELECT id FROM missions WHERE goal_type = ? AND DATE(expiry_date) = DATE(?)', ('daily', today.isoformat())).fetchone()
-            if row is None:
-                # Create a simple randomized daily mission
-                daily_templates = [
-                    ('Recycle 3 plastic bottles today', 'Snap and upload for bonus.', 'daily', 25),
-                    ('Pick up 5 pieces of litter', 'Dispose responsibly.', 'daily', 25),
-                    ('Upload one cleanup photo', 'Keep it safe and real.', 'daily', 20),
-                ]
-                title, desc, gtype, pts = random.choice(daily_templates)
-                conn.execute(
-                    'INSERT INTO missions (title, description, goal_type, points, expiry_date) VALUES (?, ?, ?, ?, ?)',
-                    (title, desc, gtype, pts, (today + timedelta(days=1)).isoformat())
-                )
-
-            # Ensure a valid weekly mission ending next Monday (or 7 days ahead)
-            week_row = conn.execute('SELECT id FROM missions WHERE goal_type = ? AND DATE(expiry_date) >= DATE(?) ORDER BY expiry_date ASC LIMIT 1', ('weekly', today.isoformat())).fetchone()
-            if week_row is None:
-                weekly_templates = [
-                    ('Upload one verified cleanup bounty this week', 'Complete or verify a cleanup bounty.', 'weekly', 60),
-                    ('Recycle 10 items this week', 'Multiple uploads allowed.', 'weekly', 50),
-                ]
-                title, desc, gtype, pts = random.choice(weekly_templates)
-                conn.execute(
-                    'INSERT INTO missions (title, description, goal_type, points, expiry_date) VALUES (?, ?, ?, ?, ?)',
-                    (title, desc, gtype, pts, (today + timedelta(days=7)).isoformat())
-                )
-            conn.commit()
-    except Exception as e:
-        print(f"Mission rotation error: {e}")
+"""
+Duplicate legacy scheduler section below consolidated by enhanced _rotate_daily_weekly_missions.
+Keeping loop code to maintain behavior while avoiding duplicate seeding logic.
+"""
 
 def _scheduler_loop() -> None:
     global _last_mission_rotation_check
@@ -1960,10 +2071,17 @@ def get_today_missions():
         except Exception:
             pass
         today = datetime.utcnow().date().isoformat()
-        missions = []
+        missions: List[Dict[str, Any]] = []
+        # Return up to 5 daily and 5 weekly missions
         for g in ('daily', 'weekly'):
-            row = conn.execute('SELECT id, title, description, goal_type, points, expiry_date FROM missions WHERE goal_type = ? AND DATE(expiry_date) >= DATE(?) ORDER BY expiry_date ASC LIMIT 1', (g, today)).fetchone()
-            if row:
+            rows = conn.execute(
+                'SELECT id, title, description, goal_type, points, expiry_date, trigger_event, target_count, category_filter '
+                'FROM missions '
+                'WHERE goal_type = ? AND DATE(expiry_date) >= DATE(?) '
+                'ORDER BY expiry_date ASC, id ASC LIMIT 5',
+                (g, today),
+            ).fetchall()
+            for row in rows:
                 missions.append({
                     'id': int(row[0]),
                     'title': row[1],
@@ -1971,6 +2089,9 @@ def get_today_missions():
                     'goal_type': row[3],
                     'points': int(row[4]),
                     'expiry_date': row[5],
+                    'trigger_event': row[6],
+                    'target_count': int(row[7] or 1),
+                    'category_filter': row[8],
                 })
         # Load progress for the user
         u = conn.execute('SELECT id FROM users WHERE username = ?', (username,)).fetchone()
@@ -2267,8 +2388,14 @@ def moderation_review() -> Tuple[Any, int]:
             # Carbon event heuristic (assume plastic if filename hints)
             category = 'plastic' if 'plastic' in (m[2] or '').lower() else 'general'
             if category != 'general':
-                # Use emission factors default mapping for plastic 0.3 kg/item
-                conn.execute('INSERT INTO carbon_events (user_id, category, amount_kg) VALUES (?, ?, ?)', (uid, category, 0.3))
+                try:
+                    factors = _load_emission_factors()
+                    per_item = float(factors.get(category, 0.0))
+                    amount = round(per_item * 1, 3)
+                    if amount > 0:
+                        conn.execute('INSERT INTO carbon_events (user_id, category, amount_kg) VALUES (?, ?, ?)', (uid, category, amount))
+                except Exception:
+                    pass
             conn.commit()
             return jsonify({"message": "approved", "awarded_points": award}), 200
         else:
@@ -2613,6 +2740,75 @@ def confirm_username_change() -> Tuple[Any, int]:
     token = f"token_{new_username}"
     return jsonify({"message": "username updated", "user": user, "token": token}), 200
 
+
+# ======== Email change (email OTP to new address) ========
+@app.route('/api/request_email_change', methods=['POST'])
+def request_email_change() -> Tuple[Any, int]:
+    """Initiate email change by sending OTP to the NEW email address.
+
+    Auth required. Body: { new_email }
+    """
+    username = parse_username_from_auth()
+    if not username:
+        return jsonify({"error": "unauthorized"}), 401
+    data: Dict[str, Any] = request.get_json(silent=True) or {}
+    new_email: str = (data.get('new_email') or '').strip()
+    if not new_email:
+        return jsonify({"error": "new_email is required"}), 400
+    if '@' not in new_email or '.' not in new_email.split('@')[-1]:
+        return jsonify({"error": "invalid email address"}), 400
+    with get_db_connection() as conn:
+        # Ensure new email is not already taken
+        exists = conn.execute('SELECT 1 FROM users WHERE TRIM(LOWER(email)) = TRIM(LOWER(?))', (new_email,)).fetchone()
+        if exists:
+            return jsonify({"error": "email already in use"}), 409
+    otp = generate_otp_code(6)
+    # Store OTP keyed to the new email with metadata of who requested it
+    store_email_otp(email=new_email, purpose='change_email', code_plain=otp, metadata={"username": username}, ttl_minutes=10)
+    # Send OTP to the new email address
+    send_email_otp(new_email, 'change_email', otp)
+    resp: Dict[str, Any] = {"message": "OTP sent to new email"}
+    if os.environ.get('DEV_MODE_OTP') == '1':
+        resp['dev_otp'] = otp
+    return jsonify(resp), 200
+
+
+@app.route('/api/confirm_email_change', methods=['POST'])
+def confirm_email_change() -> Tuple[Any, int]:
+    """Confirm email change using OTP sent to the new email.
+
+    Auth required. Body: { new_email, otp }
+    """
+    username = parse_username_from_auth()
+    if not username:
+        return jsonify({"error": "unauthorized"}), 401
+    data: Dict[str, Any] = request.get_json(silent=True) or {}
+    new_email: str = (data.get('new_email') or '').strip()
+    otp: str = (data.get('otp') or '').strip()
+    if not new_email or not otp:
+        return jsonify({"error": "new_email and otp are required"}), 400
+    meta = validate_and_consume_email_otp(email=new_email, purpose='change_email', code_plain=otp)
+    if meta is None:
+        return jsonify({"error": "invalid or expired otp"}), 400
+    # Double-check not taken and update
+    with get_db_connection() as conn:
+        taken = conn.execute('SELECT 1 FROM users WHERE TRIM(LOWER(email)) = TRIM(LOWER(?))', (new_email,)).fetchone()
+        if taken:
+            return jsonify({"error": "email already in use"}), 409
+        row = conn.execute('SELECT username, email, total_points, country, state, city FROM users WHERE username = ?', (username,)).fetchone()
+        if row is None:
+            return jsonify({"error": "user not found"}), 404
+        conn.execute('UPDATE users SET email = ? WHERE username = ?', (new_email, username))
+        conn.commit()
+        user = {
+            "username": row[0],
+            "email": new_email,
+            "total_points": row[2],
+            "country": row[3],
+            "state": row[4],
+            "city": row[5],
+        }
+    return jsonify({"message": "email updated", "user": user}), 200
 
 # ======== Password reset (email OTP) ========
 @app.route('/api/request_password_reset', methods=['POST'])
@@ -3039,7 +3235,7 @@ def create_bounty() -> Tuple[Any, int]:
 			(user_id, latitude, longitude, user_country, user_state, user_city, f"/uploads/{image_filename}")
 		)
 		bounty_id = cur.lastrowid
-		# Award reporter for raising bounty
+        # Award reporter for raising bounty
 		try:
 			# Fetch current points
 			u = conn.execute('SELECT total_points FROM users WHERE id = ?', (user_id,)).fetchone()
@@ -3050,6 +3246,11 @@ def create_bounty() -> Tuple[Any, int]:
 				'INSERT INTO transactions (user_id, points_change, reason) VALUES (?, ?, ?)',
 				(user_id, BOUNTY_REPORTER_REWARD, f'Bounty Reported - Bounty #{bounty_id}')
 			)
+            # Auto-verify mission progress for bounty report events
+            try:
+                _increment_missions_for_event(conn, user_id, event='bounty_report', increment=1, category=None)
+            except Exception:
+                pass
 		except Exception:
 			# Non-fatal failure; continue even if reward could not be applied
 			pass
@@ -3978,6 +4179,12 @@ def verify_cleanup() -> Tuple[Any, int]:
                 pass
             conn.commit()
 
+            # Auto-verify mission progress for cleanup events
+            try:
+                _increment_missions_for_event(conn, user_id, event='cleanup_verified', increment=1, category=None)
+            except Exception:
+                pass
+
         return jsonify({
             "message": "Cleanup verified successfully! Points awarded.",
             "points_awarded": points_awarded_to_requester,
@@ -4111,28 +4318,35 @@ def detect() -> Tuple[Any, int]:
 					conn.execute('INSERT INTO transactions (user_id, points_change, reason) VALUES (?, ?, ?)', (user_id, awarded_points, 'Waste Detected'))
 					conn.execute('UPDATE stats SET detections = detections + 1 WHERE id = 1')
 			# Record carbon footprint estimate based on Gemini-detected items (per item factors)
-			try:
-				factors = _load_emission_factors()
-				counts: Dict[str, int] = defaultdict(int)
-				for item in gemini_result.get('items', []):
-					text = ' '.join([
-						str(item.get('material_type', '')),
-						str(item.get('name', '')),
-						str(item.get('description', '')),
-					]).strip()
-					cat = _infer_carbon_category_from_text(text) or ''
-					if cat in ('plastic','paper','metal'):
-						counts[cat] += 1
-				# Insert aggregated events per category
-				for cat, cnt in counts.items():
-					per_item = float(factors.get(cat, 0.0))
-					amount = round(per_item * max(0, int(cnt)), 3)
-					if amount > 0:
-						conn.execute('INSERT INTO carbon_events (user_id, category, amount_kg) VALUES (?, ?, ?)', (user_id, cat, amount))
-			except Exception as _:
-				# Do not block on carbon logging
-				pass
-				conn.commit()
+            try:
+                factors = _load_emission_factors()
+                counts: Dict[str, int] = defaultdict(int)
+                for item in gemini_result.get('items', []):
+                    text = ' '.join([
+                        str(item.get('material_type', '')),
+                        str(item.get('name', '')),
+                        str(item.get('description', '')),
+                    ]).strip()
+                    cat = _infer_carbon_category_from_text(text) or ''
+                    if cat in ('plastic','paper','metal'):
+                        counts[cat] += 1
+                # Insert aggregated events per category and auto-verify missions for detect events
+                for cat, cnt in counts.items():
+                    per_item = float(factors.get(cat, 0.0))
+                    item_count = max(0, int(cnt))
+                    amount = round(per_item * item_count, 3)
+                    if amount > 0:
+                        conn.execute('INSERT INTO carbon_events (user_id, category, amount_kg) VALUES (?, ?, ?)', (user_id, cat, amount))
+                    if item_count > 0:
+                        try:
+                            _increment_missions_for_event(conn, user_id, event='detect', increment=item_count, category=cat)
+                        except Exception:
+                            pass
+            except Exception as _:
+                # Do not block on carbon logging or mission updates
+                pass
+            finally:
+                conn.commit()
 
 		# Response with Gemini-only results
 		response = {
@@ -4532,11 +4746,21 @@ def carbon_stats():
             'paper': round(by_cat.get('paper', 0.0), 3),
             'metal': round(by_cat.get('metal', 0.0), 3),
         }
+        # Map lower total emissions to healthier planet score
+        # If total <= 0.5kg => 90-100, 0.5-2kg => 60-90, >2kg => 20-60 roughly
+        if total <= 0:
+            health = 95
+        elif total <= 0.5:
+            health = 95 - int(total * 10)  # 95 to ~90
+        elif total <= 2.0:
+            health = 90 - int((total - 0.5) * 20)  # down to ~60
+        else:
+            health = max(20, 60 - int((total - 2.0) * 10))
         return jsonify({
             'week_total_kg': round(total, 3),
             'sources': result_sources,
             'factors': factors,
-            'planet_health': min(100, int(total * 5))
+            'planet_health': max(0, min(100, health))
         }), 200
 
 
