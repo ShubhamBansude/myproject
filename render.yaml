@@ -1,0 +1,32 @@
+services:
+  # Backend Flask API
+  - type: web
+    name: waste-detection-backend
+    env: python
+    plan: free
+    buildCommand: pip install -r backend/requirements.txt
+    startCommand: cd backend && python app.py
+    envVars:
+      - key: FLASK_ENV
+        value: production
+      - key: FLASK_APP
+        value: app.py
+      - key: PORT
+        value: 10000
+    healthCheckPath: /health
+    autoDeploy: true
+    branch: cursor/deploy-website-to-render-981a
+
+  # Frontend React App
+  - type: web
+    name: waste-detection-frontend
+    env: static
+    plan: free
+    buildCommand: cd frontend && npm ci && npm run build
+    staticPublishPath: frontend/dist
+    autoDeploy: true
+    branch: cursor/deploy-website-to-render-981a
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
