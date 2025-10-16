@@ -1144,14 +1144,14 @@ const Dashboard = ({ currentUser, onLogout, setCurrentUser }) => {
         {/* Content card */}
         <section className="mt-6 rounded-2xl bg-white/5 backdrop-blur border border-white/10 p-6 shadow-2xl relative">
           <h2 className="text-2xl md:text-3xl font-extrabold text-gray-100 mb-6">
-            {({
+            {{
               scan: 'Smart Waste Scan',
               bounty: 'Waste Bounty',
               clans: 'Clans',
               leaderboard: 'Leaderboard',
               rewards: 'Rewards',
               profile: 'Your Profile',
-            })[activeTab]}
+            }[activeTab]}
           </h2>
           <div className="opacity-0 animate-fade-in-up" key={activeTab}>
             <Suspense fallback={<div className="text-gray-400">Loading section…</div>}>

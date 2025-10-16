@@ -3235,7 +3235,7 @@ def create_bounty() -> Tuple[Any, int]:
 			(user_id, latitude, longitude, user_country, user_state, user_city, f"/uploads/{image_filename}")
 		)
 		bounty_id = cur.lastrowid
-        # Award reporter for raising bounty
+		# Award reporter for raising bounty
 		try:
 			# Fetch current points
 			u = conn.execute('SELECT total_points FROM users WHERE id = ?', (user_id,)).fetchone()
@@ -3246,11 +3246,11 @@ def create_bounty() -> Tuple[Any, int]:
 				'INSERT INTO transactions (user_id, points_change, reason) VALUES (?, ?, ?)',
 				(user_id, BOUNTY_REPORTER_REWARD, f'Bounty Reported - Bounty #{bounty_id}')
 			)
-            # Auto-verify mission progress for bounty report events
-            try:
-                _increment_missions_for_event(conn, user_id, event='bounty_report', increment=1, category=None)
-            except Exception:
-                pass
+			# Auto-verify mission progress for bounty report events
+			try:
+				_increment_missions_for_event(conn, user_id, event='bounty_report', increment=1, category=None)
+			except Exception:
+				pass
 		except Exception:
 			# Non-fatal failure; continue even if reward could not be applied
 			pass
@@ -4318,35 +4318,35 @@ def detect() -> Tuple[Any, int]:
 					conn.execute('INSERT INTO transactions (user_id, points_change, reason) VALUES (?, ?, ?)', (user_id, awarded_points, 'Waste Detected'))
 					conn.execute('UPDATE stats SET detections = detections + 1 WHERE id = 1')
 			# Record carbon footprint estimate based on Gemini-detected items (per item factors)
-            try:
-                factors = _load_emission_factors()
-                counts: Dict[str, int] = defaultdict(int)
-                for item in gemini_result.get('items', []):
-                    text = ' '.join([
-                        str(item.get('material_type', '')),
-                        str(item.get('name', '')),
-                        str(item.get('description', '')),
-                    ]).strip()
-                    cat = _infer_carbon_category_from_text(text) or ''
-                    if cat in ('plastic','paper','metal'):
-                        counts[cat] += 1
-                # Insert aggregated events per category and auto-verify missions for detect events
-                for cat, cnt in counts.items():
-                    per_item = float(factors.get(cat, 0.0))
-                    item_count = max(0, int(cnt))
-                    amount = round(per_item * item_count, 3)
-                    if amount > 0:
-                        conn.execute('INSERT INTO carbon_events (user_id, category, amount_kg) VALUES (?, ?, ?)', (user_id, cat, amount))
-                    if item_count > 0:
-                        try:
-                            _increment_missions_for_event(conn, user_id, event='detect', increment=item_count, category=cat)
-                        except Exception:
-                            pass
-            except Exception as _:
-                # Do not block on carbon logging or mission updates
-                pass
-            finally:
-                conn.commit()
+			try:
+				factors = _load_emission_factors()
+				counts: Dict[str, int] = defaultdict(int)
+				for item in gemini_result.get('items', []):
+					text = ' '.join([
+						str(item.get('material_type', '')),
+						str(item.get('name', '')),
+						str(item.get('description', '')),
+					]).strip()
+					cat = _infer_carbon_category_from_text(text) or ''
+					if cat in ('plastic','paper','metal'):
+						counts[cat] += 1
+				# Insert aggregated events per category and auto-verify missions for detect events
+				for cat, cnt in counts.items():
+					per_item = float(factors.get(cat, 0.0))
+					item_count = max(0, int(cnt))
+					amount = round(per_item * item_count, 3)
+					if amount > 0:
+						conn.execute('INSERT INTO carbon_events (user_id, category, amount_kg) VALUES (?, ?, ?)', (user_id, cat, amount))
+					if item_count > 0:
+						try:
+							_increment_missions_for_event(conn, user_id, event='detect', increment=item_count, category=cat)
+						except Exception:
+							pass
+			except Exception as _:
+				# Do not block on carbon logging or mission updates
+				pass
+			finally:
+				conn.commit()
 
 		# Response with Gemini-only results
 		response = {
@@ -4679,18 +4679,18 @@ def get_stats() -> Tuple[Any, int]:
 		spent_row = conn.execute('SELECT COALESCE(SUM(CASE WHEN points_change < 0 THEN -points_change ELSE 0 END),0) FROM transactions WHERE user_id = ?', (uid,)).fetchone()
 		spent = int(spent_row[0]) if spent_row else 0
 		lifetime_points = total_now + spent
-        # Waste Bounty stats
-        br_row = conn.execute('SELECT COUNT(*) FROM waste_bounty WHERE reporter_user_id = ?', (uid,)).fetchone()
-        bc_row = conn.execute('SELECT COUNT(*) FROM waste_bounty WHERE claimed_by_user_id = ?', (uid,)).fetchone()
-        bounties_raised = int(br_row[0]) if br_row else 0
-        bounties_claimed = int(bc_row[0]) if bc_row else 0
-    return jsonify({
-        "detections": detections,
-        "redemptions": redemptions,
-        "lifetime_points": lifetime_points,
-        "bounties_raised": bounties_raised,
-        "bounties_claimed": bounties_claimed,
-    }), 200
+		# Waste Bounty stats
+		br_row = conn.execute('SELECT COUNT(*) FROM waste_bounty WHERE reporter_user_id = ?', (uid,)).fetchone()
+		bc_row = conn.execute('SELECT COUNT(*) FROM waste_bounty WHERE claimed_by_user_id = ?', (uid,)).fetchone()
+		bounties_raised = int(br_row[0]) if br_row else 0
+		bounties_claimed = int(bc_row[0]) if bc_row else 0
+	return jsonify({
+		"detections": detections,
+		"redemptions": redemptions,
+		"lifetime_points": lifetime_points,
+		"bounties_raised": bounties_raised,
+		"bounties_claimed": bounties_claimed,
+	}), 200
 
 
 @app.route('/api/streak', methods=['GET'])
