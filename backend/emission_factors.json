@@ -1,5 +1,5 @@
 {
-  "plastic": 0.3,
-  "paper": 0.1,
-  "metal": 0.7
+  "plastic": 0.05,
+  "paper": 0.02,
+  "metal": 0.15
 }

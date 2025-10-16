@@ -401,6 +401,12 @@ const ProfileView = ({ user, setCurrentUser, lifetimePoints }) => {
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
 
+  // Email change
+  const [emailChangeOpen, setEmailChangeOpen] = useState(false);
+  const [newEmail, setNewEmail] = useState('');
+  const [emailOtp, setEmailOtp] = useState('');
+  const [emailStep, setEmailStep] = useState('request');
+
   const requestChange = async (e) => {
     e.preventDefault(); setError(''); setMessage('');
     if (!newUsername.trim()) { setError('Enter a new username.'); return; }
@@ -431,6 +437,42 @@ const ProfileView = ({ user, setCurrentUser, lifetimePoints }) => {
       localStorage.setItem('authToken', data.token);
       setCurrentUser((prev) => ({ ...prev, ...data.user }));
       setOpenChange(false); setStep('request'); setOtp(''); setNewUsername('');
+    } catch { setError('Network error. Please try again.'); }
+  };
+
+  const requestEmailChange = async (e) => {
+    e.preventDefault(); setError(''); setMessage('');
+    const token = localStorage.getItem('authToken');
+    if (!token) { setError('Login required'); return; }
+    if (!newEmail.trim()) { setError('Enter a new email.'); return; }
+    try {
+      const res = await fetch(apiUrl('/api/request_email_change'), {
+        method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ new_email: newEmail.trim() })
+      });
+      const data = await res.json();
+      if (!res.ok) { setError(data?.error || 'Failed to send OTP.'); return; }
+      setMessage('OTP sent to your new email. Enter it below to confirm.');
+      setEmailStep('confirm');
+    } catch { setError('Network error. Please try again.'); }
+  };
+
+  const confirmEmailChange = async (e) => {
+    e.preventDefault(); setError(''); setMessage('');
+    const token = localStorage.getItem('authToken');
+    if (!token) { setError('Login required'); return; }
+    if (!emailOtp.trim()) { setError('Enter the OTP received by email.'); return; }
+    try {
+      const res = await fetch(apiUrl('/api/confirm_email_change'), {
+        method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ new_email: newEmail.trim(), otp: emailOtp.trim() })
+      });
+      const data = await res.json();
+      if (!res.ok) { setError(data?.error || 'Failed to update email.'); return; }
+      setMessage('Email updated successfully.');
+      setCurrentUser((prev) => ({ ...prev, email: data?.user?.email }));
+      setEmail(data?.user?.email || '');
+      setEmailChangeOpen(false); setEmailStep('request'); setEmailOtp(''); setNewEmail('');
     } catch { setError('Network error. Please try again.'); }
   };
 
@@ -482,7 +524,33 @@ const ProfileView = ({ user, setCurrentUser, lifetimePoints }) => {
       </div>
       <div className="rounded-xl bg-white/5 border border-white/10 p-4">
         <div className="text-gray-400 text-sm">Email</div>
-        <div className="text-gray-100 text-xl font-semibold break-all">{user.email || '—'}</div>
+        <div className="flex items-center justify-between gap-2">
+          <div className="text-gray-100 text-xl font-semibold break-all">{user.email || '—'}</div>
+          <button onClick={() => { setEmailChangeOpen((o)=>!o); setError(''); setMessage(''); }} className="px-3 py-1 text-xs rounded-lg bg-white/5 border border-white/10 text-gray-200 hover:bg-white/10">Change</button>
+        </div>
+        {emailChangeOpen && (
+          <div className="mt-3 p-3 rounded-lg bg-white/5 border border-white/10">
+            <form onSubmit={emailStep==='request'?requestEmailChange:confirmEmailChange} className="space-y-3">
+              {emailStep==='request' ? (
+                <div>
+                  <label className="block text-xs text-gray-300 mb-1">New Email</label>
+                  <input type="email" value={newEmail} onChange={(e)=>setNewEmail(e.target.value)} className="w-full px-3 py-2 rounded bg-black/40 border border-white/10 text-gray-100" />
+                </div>
+              ) : (
+                <div>
+                  <label className="block text-xs text-gray-300 mb-1">OTP</label>
+                  <input type="text" value={emailOtp} onChange={(e)=>setEmailOtp(e.target.value)} placeholder="6-digit code" className="w-full px-3 py-2 rounded bg-black/40 border border-white/10 text-gray-100" />
+                </div>
+              )}
+              {error && <div className="text-red-300 text-xs bg-red-500/10 border border-red-500/20 rounded p-2">{error}</div>}
+              {message && <div className="text-green-300 text-xs bg-emerald-500/10 border border-emerald-500/20 rounded p-2">{message}</div>}
+              <div className="flex items-center gap-2">
+                <button type="submit" className="px-3 py-2 text-xs rounded-lg bg-eco-green text-eco-dark font-semibold">{emailStep==='request'?'Send OTP':'Confirm'}</button>
+                <button type="button" onClick={()=>{ setEmailChangeOpen(false); setEmailStep('request'); setEmailOtp(''); setNewEmail(''); }} className="px-3 py-2 text-xs rounded-lg bg-white/5 border border-white/10 text-gray-200">Cancel</button>
+              </div>
+            </form>
+          </div>
+        )}
       </div>
       <div className="rounded-xl bg-white/5 border border-white/10 p-4">
         <div className="text-gray-400 text-sm">Location</div>
@@ -931,9 +999,7 @@ const Dashboard = ({ currentUser, onLogout, setCurrentUser }) => {
                         </div>
                         <div className="flex items-center justify-between mt-2 text-xs text-gray-400">
                           <span>{m.status === 'completed' ? 'Completed' : `${m.progress || 0}%`}</span>
-                          <button onClick={()=>completeMission(m.id)} disabled={m.status==='completed'} className={`px-2 py-1 rounded-md text-xs font-semibold ${m.status==='completed' ? 'bg-gray-500/30 text-gray-300 cursor-not-allowed' : 'bg-eco-green text-eco-dark'}`}>
-                            {m.status==='completed' ? 'Done' : 'Mark Done'}
-                          </button>
+                          <span className="px-2 py-1 rounded-md bg-white/10 border border-white/10 text-gray-300">Auto-verified</span>
                         </div>
                       </div>
                     </div>
