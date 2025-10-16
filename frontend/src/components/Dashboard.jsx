@@ -1164,45 +1164,70 @@ const Dashboard = ({ currentUser, onLogout, setCurrentUser }) => {
       </div>
       )
 
-      {/* Reward Modal */}
-      {rewardOpen && (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/60">
-          <div className="w-full max-w-sm rounded-2xl bg-[#0b1220] border border-white/10 p-6 text-center relative overflow-hidden">
-            <div className="absolute inset-0 pointer-events-none">
-              <div className="absolute -top-20 -right-10 w-64 h-64 bg-emerald-500/20 rounded-full blur-3xl"></div>
-              <div className="absolute -bottom-24 -left-16 w-72 h-72 bg-amber-400/20 rounded-full blur-3xl"></div>
+          {/* Reward Modal */}
+          {rewardOpen && (
+            <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/60">
+              <div className="w-full max-w-sm rounded-2xl bg-[#0b1220] border border-white/10 p-6 text-center relative overflow-hidden">
+                <div className="absolute inset-0 pointer-events-none">
+                  <div className="absolute -top-20 -right-10 w-64 h-64 bg-emerald-500/20 rounded-full blur-3xl"></div>
+                  <div className="absolute -bottom-24 -left-16 w-72 h-72 bg-amber-400/20 rounded-full blur-3xl"></div>
+                </div>
+                <div className="relative">
+                  <div className="text-3xl mb-2">🎉</div>
+                  <div className="text-xl text-gray-100 font-bold">Mission Complete!</div>
+                  <div className="text-sm text-gray-300 mt-1">New challenge arrives tomorrow!</div>
+                  <button
+                    onClick={() => setRewardOpen(false)}
+                    className="mt-4 px-4 py-2 rounded-lg bg-eco-green text-eco-dark font-semibold"
+                  >
+                    Close
+                  </button>
+                </div>
+                {confettiBurst && (
+                  <div className="absolute inset-0 pointer-events-none animate-ping-slow"></div>
+                )}
+              </div>
             </div>
-            <div className="relative">
-              <div className="text-3xl mb-2">🎉</div>
-              <div className="text-xl text-gray-100 font-bold">Mission Complete!</div>
-              <div className="text-sm text-gray-300 mt-1">New challenge arrives tomorrow!</div>
-              <button onClick={()=>setRewardOpen(false)} className="mt-4 px-4 py-2 rounded-lg bg-eco-green text-eco-dark font-semibold">Close</button>
-            </div>
-            {confettiBurst && (
-              <div className="absolute inset-0 pointer-events-none animate-ping-slow"></div>
+          )}
+    
+          {/* Tail styles and peek user */}
+          <div>
+            <style>{`
+              .animate-ping-slow {
+                animation: ping 1.2s cubic-bezier(0, 0, 0.2, 1) 3;
+                background: radial-gradient(circle, rgba(16,185,129,0.3) 0%, rgba(0,0,0,0) 60%);
+              }
+    
+              @keyframes ping {
+                75%, 100% {
+                  transform: scale(2);
+                  opacity: 0;
+                }
+              }
+    
+              .animate-fade-in-up {
+                opacity: 0;
+                animation: fadeUp 0.55s ease-out forwards;
+              }
+    
+              @keyframes fadeUp {
+                0% {
+                  opacity: 0;
+                  transform: translateY(14px);
+                }
+                100% {
+                  opacity: 1;
+                  transform: translateY(0);
+                }
+              }
+            `}</style>
+    
+            {peekUser && (
+              <UserProfilePeek username={peekUser} onClose={() => setPeekUser('')} />
             )}
           </div>
-        </div>
-      )}
-
-      {/* Tail styles and peek user */}
-      <div>
-        <style>{"
-        .animate-ping-slow { animation: ping 1.2s cubic-bezier(0, 0, 0.2, 1) 3; background: radial-gradient(circle, rgba(16,185,129,0.3) 0%, rgba(0,0,0,0) 60%); }
-        @keyframes ping { 75%, 100% { transform: scale(2); opacity: 0; } }
-      "}</style>
-
-        {peekUser && (
-          <UserProfilePeek username={peekUser} onClose={()=>setPeekUser('')} />
-        )}
-
-        <style>{"
-        .animate-fade-in-up { opacity: 0; animation: fadeUp 0.55s ease-out forwards; }
-        @keyframes fadeUp { 0% { opacity: 0; transform: translateY(14px) } 100% { opacity: 1; transform: translateY(0) } }
-      "}</style>
-      </div>
-    </div>
-  );
-};
-
-export default Dashboard;
+      ;
+    };
+    
+    export default Dashboard;
+    
