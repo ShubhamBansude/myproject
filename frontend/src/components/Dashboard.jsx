@@ -1068,7 +1068,8 @@ const Dashboard = ({ currentUser, onLogout, setCurrentUser }) => {
             </div>
           );
         })()}
-            <div className="hidden">
+        {/* Hidden duplicated section for layout experiments (kept but hidden) */}
+        <div className="hidden">
               {/* Missions Card */}
               <div className="rounded-2xl border border-white/10 bg-gradient-to-br from-emerald-500/10 to-white/5 p-4 relative overflow-hidden">
                 <div className="flex items-center justify-between mb-2">
@@ -1161,6 +1162,7 @@ const Dashboard = ({ currentUser, onLogout, setCurrentUser }) => {
           {/* Lifetime Points widget removed from Rewards */}
         </section>
       </div>
+      )
 
       {/* Reward Modal */}
       {rewardOpen && (
@@ -1183,20 +1185,22 @@ const Dashboard = ({ currentUser, onLogout, setCurrentUser }) => {
         </div>
       )}
 
-      {/* Simple confetti animation via CSS ping */}
-      <style>{`
+      {/* Tail styles and peek user */}
+      <div>
+        <style>{"
         .animate-ping-slow { animation: ping 1.2s cubic-bezier(0, 0, 0.2, 1) 3; background: radial-gradient(circle, rgba(16,185,129,0.3) 0%, rgba(0,0,0,0) 60%); }
         @keyframes ping { 75%, 100% { transform: scale(2); opacity: 0; } }
-      `}</style>
+      "}</style>
 
-      {peekUser && (
-        <UserProfilePeek username={peekUser} onClose={()=>setPeekUser('')} />
-      )}
+        {peekUser && (
+          <UserProfilePeek username={peekUser} onClose={()=>setPeekUser('')} />
+        )}
 
-      <style>{`
+        <style>{"
         .animate-fade-in-up { opacity: 0; animation: fadeUp 0.55s ease-out forwards; }
         @keyframes fadeUp { 0% { opacity: 0; transform: translateY(14px) } 100% { opacity: 1; transform: translateY(0) } }
-      `}</style>
+      "}</style>
+      </div>
     </div>
   );
 };
