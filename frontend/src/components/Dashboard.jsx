@@ -904,10 +904,10 @@ const Dashboard = ({ currentUser, onLogout, setCurrentUser }) => {
             </div>
           </div>
 
-          {/* Eco Missions + Carbon Tracker Row */}
-          <div className="mt-4 grid grid-cols-1 lg:grid-cols-3 gap-4">
+          {/* Eco Missions + Carbon Tracker Row - HIDDEN */}
+          {/* <div className="mt-4 grid grid-cols-1 lg:grid-cols-3 gap-4"> */}
             {/* Missions Card */}
-            <div className="rounded-2xl border border-white/10 bg-gradient-to-br from-emerald-500/10 to-white/5 p-4 relative overflow-hidden">
+            {/* <div className="rounded-2xl border border-white/10 bg-gradient-to-br from-emerald-500/10 to-white/5 p-4 relative overflow-hidden">
               <div className="flex items-center justify-between mb-2">
                 <div className="text-gray-100 font-semibold">Daily & Weekly Eco Missions</div>
                 <button onClick={loadMissions} className="text-xs text-eco-green hover:underline">Refresh</button>
@@ -941,10 +941,10 @@ const Dashboard = ({ currentUser, onLogout, setCurrentUser }) => {
                   <div className="text-xs text-gray-400">No missions found. Check back soon.</div>
                 )}
               </div>
-            </div>
+            </div> */}
 
             {/* Carbon Footprint Tracker */}
-            <div className="rounded-2xl border border-white/10 bg-gradient-to-br from-emerald-500/10 to-amber-400/10 p-4">
+            {/* <div className="rounded-2xl border border-white/10 bg-gradient-to-br from-emerald-500/10 to-amber-400/10 p-4">
               <div className="text-gray-100 font-semibold mb-1">Carbon Footprint Tracker</div>
               <div className="text-sm text-gray-300">You saved <span className="text-eco-green font-bold">{carbon.week_total_kg.toFixed(1)} kg</span> CO₂ this week!</div>
               <div className="mt-3 grid grid-cols-3 gap-2 text-center text-xs">
@@ -961,16 +961,16 @@ const Dashboard = ({ currentUser, onLogout, setCurrentUser }) => {
                   <div className="h-2 bg-emerald-400 rounded-full transition-all" style={{ width: `${carbon.planet_health || 0}%` }} />
                 </div>
               </div>
-            </div>
+            </div> */}
 
             {/* Leaderboard teaser */}
-            <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-              <div className="text-gray-100 font-semibold mb-2">Top CO₂ Savers in Your City</div>
+            {/* <div className="rounded-2xl border border-white/10 bg-white/5 p-4"> */}
+              {/* <div className="text-gray-100 font-semibold mb-2">Top CO₂ Savers in Your City</div> */}
               <div className="text-xs text-gray-400">Check the leaderboard to see this week’s eco heroes.</div>
               <button onClick={()=>setActiveTab('leaderboard')} className="mt-3 px-3 py-2 rounded-lg bg-eco-green text-eco-dark text-sm font-semibold">Open Leaderboard</button>
-            </div>
+            </div> */}
             {/* Streak Calendar */}
-            <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+            {/* <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
               <div className="flex items-center justify-between mb-2">
                 <div className="text-gray-100 font-semibold">Eco-Streak</div>
                 <div className="text-xs text-gray-400">Best: {streak.best_streak || 0}</div>
@@ -981,8 +981,8 @@ const Dashboard = ({ currentUser, onLogout, setCurrentUser }) => {
                 ))}
               </div>
               <div className="text-xs text-gray-400 mt-2">Current streak: <span className="text-eco-green font-semibold">{streak.current_streak || 0} days</span></div>
-            </div>
-          </div>
+            </div> */}
+          </div> */}
         </div>
 
         {/* Content card */}
