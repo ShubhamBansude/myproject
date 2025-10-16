@@ -65,19 +65,23 @@ const LeaderList = ({ title, items, type }) => {
 const Leaderboard = () => {
   const [topUsers, setTopUsers] = useState([]);
   const [topClans, setTopClans] = useState([]);
+  const [cityCo2, setCityCo2] = useState({ users: [], city: '' });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
   const load = async () => {
     setLoading(true); setError('');
     try {
-      const [uRes, cRes] = await Promise.all([
+      const token = localStorage.getItem('authToken');
+      const [uRes, cRes, co2Res] = await Promise.all([
         fetch(apiUrl('/api/leaderboard/users?limit=10')),
         fetch(apiUrl('/api/leaderboard/clans?limit=10')),
+        fetch(apiUrl('/api/leaderboard/city_co2?limit=10'), { headers: token ? { Authorization: `Bearer ${token}` } : {} }),
       ]);
-      const [uData, cData] = await Promise.all([uRes.json(), cRes.json()]);
+      const [uData, cData, co2Data] = await Promise.all([uRes.json(), cRes.json(), co2Res.json()]);
       if (uRes.ok) setTopUsers(Array.isArray(uData.users) ? uData.users : []); else setError(uData?.error || 'Failed to load users leaderboard');
       if (cRes.ok) setTopClans(Array.isArray(cData.clans) ? cData.clans : []); else setError((prev) => prev || cData?.error || 'Failed to load clans leaderboard');
+      if (co2Res.ok) setCityCo2({ users: Array.isArray(co2Data.users) ? co2Data.users : [], city: co2Data.city || '' });
     } catch (e) {
       setError('Network error while loading leaderboard');
     } finally {
@@ -101,6 +105,28 @@ const Leaderboard = () => {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <LeaderList title="Top Users" items={topUsers} type="users" />
         <LeaderList title="Top Clans" items={topClans} type="clans" />
+      </div>
+      <div className="rounded-xl bg-white/5 border border-white/10 p-4">
+        <div className="flex items-center justify-between mb-2">
+          <div className="text-gray-200 font-semibold">Top CO₂ Savers {cityCo2.city ? `in ${cityCo2.city}` : 'in Your City'}</div>
+          <div className="text-xs text-gray-400">Last 7 days</div>
+        </div>
+        <ol className="divide-y divide-white/10">
+          {cityCo2.users.length === 0 && (
+            <li className="py-3 text-xs text-gray-400">No data available.</li>
+          )}
+          {cityCo2.users.map((u, idx) => (
+            <li key={u.username+idx} className="py-3 flex items-center gap-3">
+              <RankBadge rank={idx + 1} />
+              <Avatar label={u.username} />
+              <div className="flex-1 min-w-0">
+                <div className="text-sm text-gray-100 truncate">@{u.username}</div>
+                <div className="text-[11px] text-gray-400 truncate">{u.city || '—'}</div>
+              </div>
+              <div className="text-eco-green text-sm font-semibold">{(u.saved_kg || 0).toFixed ? u.saved_kg.toFixed(2) : Number(u.saved_kg||0).toFixed(2)} kg CO₂</div>
+            </li>
+          ))}
+        </ol>
       </div>
       <div className="rounded-xl bg-gradient-to-r from-eco-green/10 via-white/5 to-amber-400/10 border border-white/10 p-4">
         <div className="text-xs text-gray-300">

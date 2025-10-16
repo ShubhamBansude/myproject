@@ -773,6 +773,47 @@ def categorize_gemini_items(gemini_result: Dict[str, Any]) -> Dict[str, List[Dic
 	}
 
 
+# --------------------------
+# Carbon estimation helpers
+# --------------------------
+def _load_emission_factors() -> Dict[str, float]:
+    """Load emission factors in kg per item for coarse categories."""
+    factors_path = os.path.join(os.path.dirname(__file__), 'emission_factors.json')
+    default_factors: Dict[str, float] = {"plastic": 0.3, "paper": 0.1, "metal": 0.7}
+    try:
+        with open(factors_path, 'r', encoding='utf-8') as fh:
+            data = json.load(fh)
+            if isinstance(data, dict):
+                # sanitize values to float
+                return {str(k).lower(): float(v) for k, v in data.items() if isinstance(v, (int, float, str))}
+    except Exception:
+        pass
+    return default_factors
+
+
+def _infer_carbon_category_from_text(text: str) -> Optional[str]:
+    """Infer coarse carbon category (plastic, paper, metal) from free text."""
+    t = (text or '').lower()
+    if not t:
+        return None
+    # Plastics (include common polymers and items)
+    plastic_keywords = [
+        'plastic', 'pet', 'hdpe', 'ldpe', 'pp', 'polystyrene', 'ps', 'polyethylene', 'bottle', 'wrapper', 'bag',
+        'container', 'packaging', 'tetra pak'
+    ]
+    # Paper/cardboard
+    paper_keywords = ['paper', 'cardboard', 'carton', 'newspaper', 'magazine', 'tissue', 'paperboard']
+    # Metals (aluminum/steel cans, foil)
+    metal_keywords = ['aluminum', 'aluminium', 'metal', 'tin', 'steel', 'can', 'foil']
+    if any(k in t for k in plastic_keywords):
+        return 'plastic'
+    if any(k in t for k in paper_keywords):
+        return 'paper'
+    if any(k in t for k in metal_keywords):
+        return 'metal'
+    return None
+
+
 def get_db_connection() -> Connection:
 	conn = sqlite3.connect(DB_PATH)
 	conn.row_factory = sqlite3.Row
@@ -3926,6 +3967,15 @@ def verify_cleanup() -> Tuple[Any, int]:
             # Read back updated total for requester
             total_row = conn.execute('SELECT total_points FROM users WHERE id = ?', (user_id,)).fetchone()
             new_total = int(total_row[0]) if total_row else (current_points + points_awarded_to_requester)
+
+            # Also record a conservative carbon event for the cleanup (treat as 1 plastic item saved)
+            try:
+                factors = _load_emission_factors()
+                amount = round(float(factors.get('plastic', 0.3)) * 1, 3)
+                if amount > 0:
+                    conn.execute('INSERT INTO carbon_events (user_id, category, amount_kg) VALUES (?, ?, ?)', (user_id, 'plastic', amount))
+            except Exception:
+                pass
             conn.commit()
 
         return jsonify({
@@ -4060,6 +4110,28 @@ def detect() -> Tuple[Any, int]:
 				if awarded_points != 0:
 					conn.execute('INSERT INTO transactions (user_id, points_change, reason) VALUES (?, ?, ?)', (user_id, awarded_points, 'Waste Detected'))
 					conn.execute('UPDATE stats SET detections = detections + 1 WHERE id = 1')
+			# Record carbon footprint estimate based on Gemini-detected items (per item factors)
+			try:
+				factors = _load_emission_factors()
+				counts: Dict[str, int] = defaultdict(int)
+				for item in gemini_result.get('items', []):
+					text = ' '.join([
+						str(item.get('material_type', '')),
+						str(item.get('name', '')),
+						str(item.get('description', '')),
+					]).strip()
+					cat = _infer_carbon_category_from_text(text) or ''
+					if cat in ('plastic','paper','metal'):
+						counts[cat] += 1
+				# Insert aggregated events per category
+				for cat, cnt in counts.items():
+					per_item = float(factors.get(cat, 0.0))
+					amount = round(per_item * max(0, int(cnt)), 3)
+					if amount > 0:
+						conn.execute('INSERT INTO carbon_events (user_id, category, amount_kg) VALUES (?, ?, ?)', (user_id, cat, amount))
+			except Exception as _:
+				# Do not block on carbon logging
+				pass
 				conn.commit()
 
 		# Response with Gemini-only results
@@ -4156,6 +4228,19 @@ def detect() -> Tuple[Any, int]:
 					if awarded_points != 0:
 						conn.execute('INSERT INTO transactions (user_id, points_change, reason) VALUES (?, ?, ?)', (user_id, awarded_points, 'Video Disposal Verified'))
 						conn.execute('UPDATE stats SET detections = detections + 1 WHERE id = 1')
+					# Record carbon estimate for one disposed item when disposal is verified
+					try:
+						if disposal_verified:
+							factors = _load_emission_factors()
+							infer_text = f"{waste_type} {reasoning}"
+							cat = _infer_carbon_category_from_text(infer_text)
+							if cat in ('plastic','paper','metal'):
+								per_item = float(factors.get(cat, 0.0))
+								amount = round(per_item * 1, 3)
+								if amount > 0:
+									conn.execute('INSERT INTO carbon_events (user_id, category, amount_kg) VALUES (?, ?, ?)', (user_id, cat, amount))
+					except Exception:
+						pass
 					conn.commit()
 
 			# Response for video analysis
@@ -5131,6 +5216,45 @@ def leaderboard_clans():
             for r in rows
         ]
         return jsonify({"clans": clans}), 200
+
+
+@app.route('/api/leaderboard/city_co2', methods=['GET'])
+def leaderboard_city_co2():
+    """
+    Top CO₂ savers in the authenticated user's city over the last 7 days,
+    ranked by total carbon_events.amount_kg.
+    Query params: limit (default 10)
+    """
+    limit = int(request.args.get('limit', '10'))
+    limit = max(1, min(limit, 50))
+    username = parse_username_from_auth()
+    if not username:
+        return jsonify({"error": "unauthorized"}), 401
+    week_ago = (datetime.utcnow() - timedelta(days=7)).strftime('%Y-%m-%d %H:%M:%S')
+    with get_db_connection() as conn:
+        u = conn.execute('SELECT id, city FROM users WHERE username = ?', (username,)).fetchone()
+        if not u:
+            return jsonify({"error": "user not found"}), 404
+        city = u[1]
+        if not city:
+            return jsonify({"users": []}), 200
+        rows = conn.execute(
+            'SELECT users.username AS username, users.city AS city, '
+            'COALESCE(SUM(carbon_events.amount_kg), 0) AS saved_kg '
+            'FROM users '
+            'LEFT JOIN carbon_events ON carbon_events.user_id = users.id '
+            '  AND carbon_events.created_at >= ? '
+            'WHERE users.city = ? '
+            'GROUP BY users.id '
+            'ORDER BY saved_kg DESC '
+            'LIMIT ?',
+            (week_ago, city, limit)
+        ).fetchall()
+        users = [
+            {"username": r[0], "city": r[1], "saved_kg": round(float(r[2] or 0.0), 3)}
+            for r in rows
+        ]
+        return jsonify({"users": users, "city": city}), 200
 
 
 # ======== Friends & Direct Messages ========
